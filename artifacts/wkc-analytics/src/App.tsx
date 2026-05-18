@@ -460,6 +460,17 @@ export default function App() {
     setTimeout(() => qaRef.current?.scrollTo({ top: 9e9, behavior: "smooth" }), 80);
   };
 
+  const sendQAText = async (text: string) => {
+    if (!text || qaLoad) return;
+    setQaLoad(true);
+    setQa(h => [...h, { role: "user", content: text }]);
+    const ctx = buildCtx(rows, deps, quizRows, dateRange);
+    const ans = await callClaude(ctx, text + "\n\nBe concise, 2-4 sentences. Bold **key numbers** only.");
+    setQa(h => [...h, { role: "assistant", content: ans }]);
+    setQaLoad(false);
+    setTimeout(() => qaRef.current?.scrollTo({ top: 9e9, behavior: "smooth" }), 80);
+  };
+
   const commitEdit = () => {
     if (!editCell) return;
     setRows(prev => prev.map(r => r.date === editCell.date ? { ...r, meta: { ...r.meta, [editCell.field]: editVal } } : r));
@@ -506,6 +517,56 @@ export default function App() {
     anomaly: { label: "Anomaly", color: "#b91c1c", bg: "#fef2f2", dot: "#b91c1c" },
   };
 
+  // KPI bar computations
+  const kpiRows = rows.filter(r => inRange(r.date, dateRange) && hasData(r));
+  const kpiSpend = kpiRows.reduce((s, r) => s + (+r.meta.adSpend || 0), 0);
+  const kpiCPCVals = kpiRows.map(r => calcDerived(r.meta).cpc).filter((v): v is number => v != null);
+  const kpiCTRVals = kpiRows.map(r => calcDerived(r.meta).ctr).filter((v): v is number => v != null);
+  const kpiAvgCPC = kpiCPCVals.length ? kpiCPCVals.reduce((a, b) => a + b, 0) / kpiCPCVals.length : null;
+  const kpiAvgCTR = kpiCTRVals.length ? kpiCTRVals.reduce((a, b) => a + b, 0) / kpiCTRVals.length : null;
+  const kpiSessions = kpiRows.reduce((s, r) => s + (r.tel?.quizStarted || 0), 0);
+  const kpiPayments = kpiRows.reduce((s, r) => s + (r.tel?.paySuccessful || 0), 0);
+
+  // Rolling 7-day avg for CPC/CTR cell colour coding
+  const allDataRows = rows.filter(r => hasData(r));
+  const rollMap: Record<string, { cpc: number | null; ctr: number | null }> = {};
+  allDataRows.forEach((r, idx) => {
+    const prev = allDataRows.slice(Math.max(0, idx - 7), idx);
+    const pCPCs = prev.map(p => calcDerived(p.meta).cpc).filter((v): v is number => v != null);
+    const pCTRs = prev.map(p => calcDerived(p.meta).ctr).filter((v): v is number => v != null);
+    rollMap[r.date] = {
+      cpc: pCPCs.length >= 3 ? pCPCs.reduce((a, b) => a + b, 0) / pCPCs.length : null,
+      ctr: pCTRs.length >= 3 ? pCTRs.reduce((a, b) => a + b, 0) / pCTRs.length : null,
+    };
+  });
+
+  // Funnel summary from filtered quiz sessions
+  const funnelSteps = filteredQ.length > 0 ? [
+    { label: "Quiz Started", val: filteredQ.length, color: "#6b6560" },
+    { label: "Quiz Done", val: filteredQ.filter(s => s["Status for Analytics"] || s.recommendation).length, color: "#0369a1" },
+    { label: "Pay Initiated", val: filteredQ.filter(s => ["Payment Intiated", "Payment Dismissed", "Payment Abandoned", "Payment Successful"].includes(s["Status for Analytics"])).length, color: "#b45309" },
+    { label: "Pay Successful", val: filteredQ.filter(s => s["Status for Analytics"] === "Payment Successful").length, color: "#059669" },
+  ] : null;
+
+  // Category breakdown from filtered sessions
+  const catCountMap: Record<string, { total: number; paid: number }> = {};
+  filteredQ.forEach(s => {
+    const c = s.recommendation || "Unknown";
+    if (!catCountMap[c]) catCountMap[c] = { total: 0, paid: 0 };
+    catCountMap[c].total++;
+    if (s["Status for Analytics"] === "Payment Successful") catCountMap[c].paid++;
+  });
+  const catEntries = Object.entries(catCountMap).sort((a, b) => b[1].total - a[1].total);
+  const maxCatVal = catEntries[0]?.[1].total || 1;
+
+  const SUGGESTED_QS = [
+    "What's driving any conversion drops?",
+    "Which categories convert best to payment?",
+    "How did CTR change across deployments?",
+    "What age group has the best payment rate?",
+    "What should I prioritise to improve ROAS?",
+  ];
+
   return (
     <div style={{ background: "#faf9f7", minHeight: "100vh", fontFamily: "'DM Sans',system-ui,sans-serif", color: "#1a1a1a", fontSize: 13 }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}@keyframes fu{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}.fu{animation:fu .2s ease}button:hover{opacity:.8}.ed:hover{background:#fffbf2!important;cursor:text}.rh:hover td{background:#f7f5f0!important}*{box-sizing:border-box}::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-thumb{background:#d5d0c8;border-radius:2px}textarea{resize:none;font-family:inherit}`}</style>
@@ -540,7 +601,7 @@ export default function App() {
 
       {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "1px solid #e8e3dc", padding: "0 20px", background: "#faf9f7" }}>
-        {([["table", "Data Table"], ["sessions", "Quiz Sessions"], ["recs", "Recommendations"], ["qa", "Ask AI"]] as [string, string][]).map(([k, l]) => (
+        {([["table", "Data Table"], ["sessions", quizRows.length ? `Quiz Sessions (${quizRows.length})` : "Quiz Sessions"], ["recs", "Recommendations"], ["qa", "Ask AI"]] as [string, string][]).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{ background: "none", border: "none", padding: "12px 0", marginRight: 24, fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", color: tab === k ? "#1a1a1a" : "#9b9590", borderBottom: tab === k ? "2px solid #1a1a1a" : "2px solid transparent", transition: "all .15s" }}>{l}</button>
         ))}
       </div>
@@ -564,6 +625,22 @@ export default function App() {
           <input value={depForm.label} onChange={e => setDepForm(f => ({ ...f, label: e.target.value }))} placeholder="What changed?" style={{ ...INP, width: 200 }} />
           <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { setDeps(d => [...d, { date: depForm.date, label: depForm.label }]); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
           <button style={BTN()} onClick={() => setDepForm(f => ({ ...f, show: false }))}>Cancel</button>
+        </div>}
+
+        {kpiRows.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
+          {[
+            { label: "Total Spend", value: "₹" + kpiSpend.toLocaleString("en-IN", { maximumFractionDigits: 0 }), sub: "excl. GST · " + kpiRows.length + " days" },
+            { label: "Avg CPC", value: kpiAvgCPC != null ? "₹" + kpiAvgCPC.toFixed(2) : "—", sub: "cost per click" },
+            { label: "Avg CTR", value: kpiAvgCTR != null ? kpiAvgCTR.toFixed(2) + "%" : "—", sub: "click-through rate" },
+            { label: "Quiz Sessions", value: kpiSessions > 0 ? kpiSessions.toLocaleString() : "—", sub: "from telemetry CSV" },
+            { label: "Payments", value: kpiPayments > 0 ? kpiPayments.toLocaleString() : "—", sub: kpiSessions > 0 && kpiPayments > 0 ? (kpiPayments / kpiSessions * 100).toFixed(1) + "% of sessions" : "from telemetry CSV" },
+          ].map(k => (
+            <div key={k.label} style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "10px 14px" }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: "#9b9590", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.03em", color: "#1a1a1a" }}>{k.value}</div>
+              <div style={{ fontSize: 9, color: "#9b9590", marginTop: 2 }}>{k.sub}</div>
+            </div>
+          ))}
         </div>}
 
         <div style={{ overflowX: "auto", border: "1px solid #e8e3dc", borderRadius: 8, background: "#fff", maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
@@ -592,7 +669,20 @@ export default function App() {
                           {isEd(c.key) ? <input autoFocus value={editVal} onChange={e => setEditVal(e.target.value)} onBlur={commitEdit} onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditCell(null); }} style={{ border: "1px solid #1a1a1a", borderRadius: 3, padding: "2px 5px", fontSize: 11, width: 75, textAlign: "right", outline: "none", fontFamily: "monospace" }} /> : <span style={{ color: row.meta[c.key] ? "#1a1a1a" : "#ccc", fontFamily: "monospace" }}>{row.meta[c.key] ? ((c as { pre?: string }).pre || "") + row.meta[c.key] : "—"}</span>}
                         </td>
                       ))}
-                      {META_D.map(c => <td key={c.key} style={TD("right", "#f9f7f4")}><span style={{ color: dvAny[c.key] ? "#6b6560" : "#d5d0c8", fontFamily: "monospace" }}>{dvAny[c.key] != null ? ((c as { pre?: string }).pre || "") + (+dvAny[c.key]!).toFixed(c.dec || 0) + ((c as { suf?: string }).suf || "") : "—"}</span></td>)}
+                      {META_D.map(c => {
+                        const val = dvAny[c.key] as number | null;
+                        const ra = rollMap[row.date];
+                        let cellColor = val != null ? "#6b6560" : "#d5d0c8";
+                        let cellBold = false;
+                        if (val != null && c.key === "cpc" && ra?.cpc != null) {
+                          if (val < ra.cpc * 0.97) { cellColor = "#059669"; cellBold = true; }
+                          else if (val > ra.cpc * 1.03) { cellColor = "#dc2626"; cellBold = true; }
+                        } else if (val != null && c.key === "ctr" && ra?.ctr != null) {
+                          if (val > ra.ctr * 1.03) { cellColor = "#059669"; cellBold = true; }
+                          else if (val < ra.ctr * 0.97) { cellColor = "#dc2626"; cellBold = true; }
+                        }
+                        return <td key={c.key} style={TD("right", "#f9f7f4")}><span style={{ color: cellColor, fontFamily: "monospace", fontWeight: cellBold ? 600 : 400 }} title={cellBold && ra ? `7-day avg: ${c.key === "cpc" ? "₹" + ra.cpc!.toFixed(2) : ra.ctr!.toFixed(2) + "%"}` : undefined}>{val != null ? ((c as { pre?: string }).pre || "") + val.toFixed(c.dec || 0) + ((c as { suf?: string }).suf || "") : "—"}</span></td>;
+                      })}
                       {TEL_C.map(c => { const v = row.tel?.[c.key as keyof TelRow]; return <td key={c.key} style={TD("right", "#f7fdfb")}><span style={{ fontFamily: "monospace", color: v == null ? "#d5d0c8" : c.key === "paySuccessful" && v > 0 ? "#059669" : v > 0 ? "#1a1a1a" : "#ccc", fontWeight: c.key === "paySuccessful" && v != null && v > 0 ? 600 : 400 }}>{v ?? "-"}</span></td>; })}
                       <td style={TD("left")}>
                         {comments[row.date] ? <span style={{ color: "#6b6560", lineHeight: 1.5, fontSize: 10 }}>{comments[row.date]}</span> : commLoad ? <Spin /> : hasData(row) ? <span style={{ color: "#ccc", fontSize: 10, cursor: "pointer" }} onClick={async () => { const ctx = buildCtx(rows, deps, quizRows, dateRange); const c = await callClaude(ctx, "For " + row.date + " only: one sentence about performance. Note any deployment."); setComments(p => ({ ...p, [row.date]: c })); }}>generate</span> : null}
@@ -647,6 +737,42 @@ export default function App() {
           </select>
           {qSort.key && <button style={BTN()} onClick={() => setQSort(s => ({ ...s, dir: s.dir * -1 }))}>{qSort.dir === 1 ? "↑ Asc" : "↓ Desc"}</button>}
           {(qFilter.date !== "all" || qFilter.rec !== "all" || qFilter.status !== "all" || qSearch || qSort.key) && <button style={BTN()} onClick={() => { setQFilter({ date: "all", rec: "all", status: "all" }); setQSearch(""); setQSort({ key: null, dir: 1 }); }}>Clear all</button>}
+        </div>}
+
+        {quizRows.length > 0 && funnelSteps && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+          <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "12px 14px" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#9b9590", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Funnel Drop-off</div>
+            {funnelSteps.map((step, si) => {
+              const pct = si === 0 ? 100 : funnelSteps[0].val > 0 ? (step.val / funnelSteps[0].val * 100) : 0;
+              const conv = si > 0 && funnelSteps[si - 1].val > 0 ? (step.val / funnelSteps[si - 1].val * 100).toFixed(1) + "%" : null;
+              return (
+                <div key={step.label} style={{ marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
+                    <span style={{ fontSize: 11, color: "#6b6560" }}>{step.label}</span>
+                    <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 600, color: step.color }}>{step.val.toLocaleString()}{conv && <span style={{ color: "#9b9590", fontWeight: 400, fontSize: 10 }}> · {conv}</span>}</span>
+                  </div>
+                  <div style={{ height: 6, background: "#f0ece6", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: pct + "%", background: step.color, borderRadius: 3, transition: "width .5s ease" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "12px 14px" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#9b9590", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>Category Breakdown</div>
+            {catEntries.length === 0 && <div style={{ fontSize: 11, color: "#9b9590" }}>No recommendation data in filtered sessions.</div>}
+            {catEntries.slice(0, 8).map(([cat, counts]) => (
+              <div key={cat} style={{ marginBottom: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
+                  <span style={{ fontSize: 11, color: "#6b6560", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "65%" }}>{cat}</span>
+                  <span style={{ fontSize: 11, fontFamily: "monospace" }}><span style={{ color: "#1a1a1a", fontWeight: 600 }}>{counts.total}</span>{counts.paid > 0 && <span style={{ color: "#059669" }}> · {counts.paid} paid</span>}</span>
+                </div>
+                <div style={{ height: 6, background: "#f0ece6", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: (counts.total / maxCatVal * 100) + "%", background: "#0369a1", borderRadius: 3, transition: "width .5s ease" }} />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>}
 
         {quizRows.length === 0 ? <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: 40, textAlign: "center", color: "#9b9590" }}>Upload the telemetry CSV to populate sessions.</div> :
@@ -721,22 +847,40 @@ export default function App() {
 
       {/* ASK AI */}
       {tab === "qa" && <div style={{ padding: 20, display: "flex", flexDirection: "column", height: "calc(100vh - 110px)" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Ask AI</div>
-        <div style={{ fontSize: 11, color: "#9b9590", marginBottom: 12 }}>Ask anything about your funnel data</div>
-        <div ref={qaRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-          {qa.length === 0 && <div style={{ color: "#9b9590", fontSize: 11, textAlign: "center", marginTop: 40 }}>Ask a question about your WizKids Carnival funnel data.</div>}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Ask AI</div>
+            <div style={{ fontSize: 11, color: "#9b9590" }}>Claude has full context of your Meta spend, telemetry, and session data</div>
+          </div>
+          {qa.length > 0 && <button style={BTN()} onClick={() => setQa([])}>Clear chat</button>}
+        </div>
+        <div ref={qaRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+          {qa.length === 0 && <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 28 }}>
+            <div style={{ width: 38, height: 38, borderRadius: "50%", background: "#f0ede8", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, marginBottom: 10 }}>✦</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Ask about your funnel</div>
+            <div style={{ fontSize: 11, color: "#9b9590", marginBottom: 20, textAlign: "center", maxWidth: 300, lineHeight: 1.5 }}>Get instant insights on spend efficiency, conversion trends, and what to act on next.</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", maxWidth: 500 }}>
+              {SUGGESTED_QS.map(q => (
+                <button key={q} onClick={() => sendQAText(q)} disabled={qaLoad} style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 20, padding: "7px 14px", fontSize: 11, cursor: "pointer", color: "#1a1a1a", fontFamily: "inherit" }}>{q}</button>
+              ))}
+            </div>
+          </div>}
           {qa.map((m, i) => (
-            <div key={i} className="fu" style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-              <div style={{ maxWidth: "75%", background: m.role === "user" ? "#1a1a1a" : "#fff", color: m.role === "user" ? "#fff" : "#1a1a1a", borderRadius: 8, padding: "8px 12px", fontSize: 12, lineHeight: 1.6, border: m.role === "user" ? "none" : "1px solid #e8e3dc" }}>
+            <div key={i} className="fu" style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", alignItems: "flex-start", gap: 8 }}>
+              {m.role === "assistant" && <div style={{ width: 24, height: 24, borderRadius: "50%", background: "#f0ede8", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, flexShrink: 0, marginTop: 2 }}>✦</div>}
+              <div style={{ maxWidth: "72%", background: m.role === "user" ? "#1a1a1a" : "#fff", color: m.role === "user" ? "#fff" : "#1a1a1a", borderRadius: m.role === "user" ? "12px 12px 3px 12px" : "3px 12px 12px 12px", padding: "9px 13px", fontSize: 12, lineHeight: 1.65, border: m.role === "user" ? "none" : "1px solid #e8e3dc" }}>
                 {m.role === "assistant" ? renderMd(m.content) : m.content}
               </div>
             </div>
           ))}
-          {qaLoad && <div style={{ display: "flex", justifyContent: "flex-start" }}><div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "8px 12px", display: "flex", gap: 6, alignItems: "center", color: "#9b9590", fontSize: 12 }}><Spin /> Thinking...</div></div>}
+          {qaLoad && <div style={{ display: "flex", justifyContent: "flex-start", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 24, height: 24, borderRadius: "50%", background: "#f0ede8", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, flexShrink: 0 }}>✦</div>
+            <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: "3px 12px 12px 12px", padding: "9px 13px", display: "flex", gap: 7, alignItems: "center", color: "#9b9590", fontSize: 12 }}><Spin /> Thinking...</div>
+          </div>}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <input value={qaInput} onChange={e => setQaInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQA(); } }} placeholder="Ask about conversions, trends, anomalies..." style={{ ...INP, flex: 1 }} disabled={qaLoad} />
-          <button style={BTN("primary")} onClick={sendQA} disabled={qaLoad || !qaInput.trim()}>{qaLoad ? <Spin /> : "Send"}</button>
+          <button style={BTN("primary")} onClick={() => sendQA()} disabled={qaLoad || !qaInput.trim()}>{qaLoad ? <Spin /> : "Send"}</button>
         </div>
       </div>}
     </div>
