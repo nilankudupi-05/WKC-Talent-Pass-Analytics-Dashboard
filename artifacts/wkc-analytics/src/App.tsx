@@ -40,9 +40,9 @@ const SEED_META: Record<string, Record<string, string>> = {
   "2026-05-14": { adSpend: "689.23", impressions: "2389", reach: "2034", linkClicks: "112", lpv: "95" },
   "2026-05-15": { adSpend: "712.45", impressions: "2512", reach: "2143", linkClicks: "124", lpv: "106" },
   "2026-05-16": { adSpend: "698.34", impressions: "2423", reach: "2067", linkClicks: "118", lpv: "101" },
-  "2026-05-17": { adSpend: "723.12", impressions: "2567", reach: "2189", linkClicks: "127", lpv: "109" },
-  "2026-05-18": { adSpend: "734.56", impressions: "2634", reach: "2245", linkClicks: "131", lpv: "112" },
-  "2026-05-19": { adSpend: "718.23", impressions: "2489", reach: "2123", linkClicks: "123", lpv: "105" },
+  "2026-05-17": { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" },
+  "2026-05-18": { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" },
+  "2026-05-19": { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" },
 };
 
 const SEED_PCT: Record<string, Record<string, string>> = {
@@ -68,9 +68,9 @@ const SEED_PCT: Record<string, Record<string, string>> = {
   "2026-05-14": { qLink: "53.57%", qLPV: "66.32%", qDone: "98.33%", payI: "33.90%", payD: "1.67%", eF: "16.67%", eP: "21.43%", pClk: "15.18%", pLPV: "18.95%", pQS: "28.33%", pQC: "28.81%" },
   "2026-05-15": { qLink: "55.65%", qLPV: "68.87%", qDone: "98.55%", payI: "34.78%", payD: "1.56%", eF: "17.39%", eP: "22.58%", pClk: "16.13%", pLPV: "20.75%", pQS: "29.03%", pQC: "29.55%" },
   "2026-05-16": { qLink: "54.24%", qLPV: "67.33%", qDone: "98.44%", payI: "34.15%", payD: "1.59%", eF: "17.19%", eP: "21.95%", pClk: "15.25%", pLPV: "19.80%", pQS: "28.13%", pQC: "28.57%" },
-  "2026-05-17": { qLink: "56.69%", qLPV: "70.64%", qDone: "98.62%", payI: "35.51%", payD: "1.45%", eF: "18.12%", eP: "23.62%", pClk: "16.54%", pLPV: "21.10%", pQS: "29.71%", pQC: "30.14%" },
-  "2026-05-18": { qLink: "57.25%", qLPV: "71.43%", qDone: "98.70%", payI: "35.90%", payD: "1.39%", eF: "18.32%", eP: "24.04%", pClk: "16.79%", pLPV: "21.43%", pQS: "29.31%", pQC: "30.00%" },
-  "2026-05-19": { qLink: "56.10%", qLPV: "69.52%", qDone: "98.54%", payI: "35.00%", payD: "1.43%", eF: "17.89%", eP: "23.17%", pClk: "15.85%", pLPV: "20.00%", pQS: "28.21%", pQC: "28.71%" },
+  "2026-05-17": {},
+  "2026-05-18": {},
+  "2026-05-19": {},
 };
 
 function parseFields(line: string): string[] {
@@ -172,8 +172,8 @@ const DEFAULT_MAPPING: MappingState = {
   paymentCategory: "PAYMENT", paymentStepPath: "data.step", paymentPlanPath: "data.subscriptionId",
   paymentCategoryPath: "data.categoryName", userNamePath: "user.name", userMobilePath: "user.mobile",
   userAgeGroupPath: "user.ageGroup", utmPath: "utmDetails", telemetryCategory: "TELEMETRY",
-  timeSpentTypePath: "data.type", timeSpentTypeValue: "time_spent", timeSpentSectionPath: "data.sectionId",
-  timeSpentSecondsPath: "data.seconds", sectionIdToColumnMap: {},
+  timeSpentTypePath: "data.type", timeSpentTypeValue: "TIME_SPENT", timeSpentSectionPath: "data.sectionId",
+  timeSpentSecondsPath: "data.timeSpentSeconds", sectionIdToColumnMap: {},
 };
 
 async function fetchAIMapping(rawRows: Record<string, string>[]): Promise<MappingState> {
@@ -228,7 +228,7 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       const secId = gp(e.p, m.timeSpentSectionPath) as string;
       const secs = (gp(e.p, m.timeSpentSecondsPath) as number) || 0;
       if (!secId) return;
-      const col = secMap[secId] || ("section_" + secId.replace(/-/g, "_") + "_time_seconds");
+      const col = secMap[secId] || ("section_" + secId + "_time_seconds");
       timeSec[col] = (timeSec[col] || 0) + secs;
     });
     const date = events[0]?.r.created_on?.slice(0, 10) || "";
@@ -376,7 +376,7 @@ export default function App() {
   const [editCell, setEditCell] = useState<{ date: string; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
   const [csvLoading, setCsvLoading] = useState(false);
-  const [mappingState, setMappingState] = useState<MappingCacheItem | null>(() => { try { const c = localStorage.getItem("wkc_schema"); return c ? JSON.parse(c) as MappingCacheItem : null; } catch { return null; } });
+  const [mappingState, setMappingState] = useState<MappingCacheItem | null>(() => { try { const c = localStorage.getItem("wkc_schema"); if (!c) return null; const parsed = JSON.parse(c) as MappingCacheItem; if (parsed.mapping?.timeSpentTypeValue === "time_spent" || parsed.mapping?.timeSpentSecondsPath === "data.seconds") { localStorage.removeItem("wkc_schema"); return null; } return parsed; } catch { return null; } });
   const [mappingLoading, setMappingLoading] = useState(false);
   const [mappingNote, setMappingNote] = useState("");
   const [recs, setRecs] = useState<{ type: string; title: string; detail: string }[] | null>(null);
@@ -614,8 +614,9 @@ export default function App() {
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Quiz Sessions</div>
             <div style={{ fontSize: 11, color: "#9b9590" }}>{quizRows.length > 0 ? filteredQ.length + " of " + quizRows.length + " sessions" : "Upload CSV to populate"}</div>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button style={BTN()} onClick={() => setShowIntMgr(v => !v)}>&#8856; Internal ({internalNums.length})</button>
+            <button style={BTN()} onClick={() => { setMappingState(null); try { localStorage.removeItem("wkc_schema"); } catch {} setMappingNote("Mapping cache cleared — will re-map on next CSV upload."); }} title="Force Claude to re-map fields on next upload">Reset Mapping</button>
             <div style={{ fontSize: 11, color: "#9b9590", padding: "6px 10px", background: "#f5f2ee", borderRadius: 6, display: "flex", alignItems: "center" }}>Populated from Telemetry CSV ↑</div>
           </div>
         </div>
@@ -633,12 +634,19 @@ export default function App() {
           <div style={{ fontSize: 10, color: "#9b9590", marginTop: 6 }}>Excluded from all tables and AI context. Saved in browser storage.</div>
         </div>}
 
-        {quizRows.length > 0 && <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {quizRows.length > 0 && <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
           <input value={qSearch} onChange={e => setQSearch(e.target.value)} placeholder="Search name / mobile..." style={{ ...INP, width: 160 }} />
           <select value={qFilter.date} onChange={e => setQFilter(f => ({ ...f, date: e.target.value }))} style={{ ...INP, cursor: "pointer" }}><option value="all">All dates</option>{uniqueQDates.map(d => <option key={d} value={d}>{d}</option>)}</select>
           <select value={qFilter.rec} onChange={e => setQFilter(f => ({ ...f, rec: e.target.value }))} style={{ ...INP, cursor: "pointer" }}><option value="all">All categories</option>{ALL_RECS.map(r => <option key={r} value={r}>{r}</option>)}</select>
           <select value={qFilter.status} onChange={e => setQFilter(f => ({ ...f, status: e.target.value }))} style={{ ...INP, cursor: "pointer" }}><option value="all">All statuses</option>{ALL_STATS.map(s => <option key={s} value={s}>{s}</option>)}</select>
-          {(qFilter.date !== "all" || qFilter.rec !== "all" || qFilter.status !== "all" || qSearch) && <button style={BTN()} onClick={() => { setQFilter({ date: "all", rec: "all", status: "all" }); setQSearch(""); }}>Clear</button>}
+          <div style={{ width: 1, height: 20, background: "#e8e3dc", flexShrink: 0 }} />
+          <span style={{ fontSize: 10, color: "#9b9590", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Sort</span>
+          <select value={qSort.key || ""} onChange={e => setQSort({ key: e.target.value || null, dir: 1 })} style={{ ...INP, cursor: "pointer" }}>
+            <option value="">— none —</option>
+            {SESSION_COLS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+          {qSort.key && <button style={BTN()} onClick={() => setQSort(s => ({ ...s, dir: s.dir * -1 }))}>{qSort.dir === 1 ? "↑ Asc" : "↓ Desc"}</button>}
+          {(qFilter.date !== "all" || qFilter.rec !== "all" || qFilter.status !== "all" || qSearch || qSort.key) && <button style={BTN()} onClick={() => { setQFilter({ date: "all", rec: "all", status: "all" }); setQSearch(""); setQSort({ key: null, dir: 1 }); }}>Clear all</button>}
         </div>}
 
         {quizRows.length === 0 ? <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: 40, textAlign: "center", color: "#9b9590" }}>Upload the telemetry CSV to populate sessions.</div> :
