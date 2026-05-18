@@ -212,7 +212,7 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     events.filter(e => e.p.category === m.quizCategory).forEach(e => {
       const step = gp(e.p, m.quizStepPath) as number;
       const ans = gp(e.p, m.quizAnswerPath);
-      if (step != null) answers[step] = { answer: Array.isArray(ans) ? ans.join(", ") : (ans as string || "") };
+      if (step != null) answers[step] = { answer: Array.isArray(ans) ? ans.join(", ") : (typeof ans === "string" ? ans : "") };
     });
     const recEvt = events.find(e => e.p.category === m.recCategory);
     const payEvts = events.filter(e => e.p.category === m.paymentCategory).sort((a, b) =>
@@ -662,7 +662,7 @@ export default function App() {
                           return <td key={c.key} style={{ ...TD("left") }}><span style={{ background: sc.b, color: sc.c, borderRadius: 3, padding: "2px 5px", fontSize: 10, fontWeight: 500, whiteSpace: "nowrap" }}>{val || "Quiz Completed"}</span></td>;
                         }
                         if (c.key === "q4_answer") {
-                          const parts = (val || "").split(",").map((v: string) => v.trim()).filter(Boolean);
+                          const parts = String(val || "").split(",").map((v: string) => v.trim()).filter(Boolean);
                           return <td key={c.key} style={TD("left")}><span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>{parts.map((p: string) => <span key={p} style={{ background: "#f0f9ff", color: "#0369a1", borderRadius: 3, padding: "1px 4px", fontSize: 9, fontWeight: 500 }}>{Q4L[p] || p}</span>)}</span></td>;
                         }
                         if (c.key === "name") {
