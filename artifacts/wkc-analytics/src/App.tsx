@@ -273,9 +273,9 @@ function buildCtx(
   if (quizSessions && quizSessions.length) {
     const qs = quizSessions.filter(s => inRange(s._date, dr));
     const paid = qs.filter(s => s["Status for Analytics"] === "Payment Successful");
-    const catCount: Record<string, number> = {}, catPaid: Record<string, number> = {};
-    qs.forEach(s => { const c = s.recommendation || "?"; catCount[c] = (catCount[c] || 0) + 1; if (s["Status for Analytics"] === "Payment Successful") catPaid[c] = (catPaid[c] || 0) + 1; });
-    const catStr = Object.entries(catCount).sort((a, b) => b[1] - a[1]).map(([c, n]) => c + ":" + n + "sessions/" + (catPaid[c] || 0) + "paid").join(", ");
+    const catCount: Record<string, number> = {}, catPaid: Record<string, number> = {}, catInit: Record<string, number> = {}, catAbn: Record<string, number> = {};
+    qs.forEach(s => { const c = s.recommendation || "?"; catCount[c] = (catCount[c] || 0) + 1; const st = s["Status for Analytics"]; if (st === "Payment Successful") catPaid[c] = (catPaid[c] || 0) + 1; else if (st === "Payment Intiated") catInit[c] = (catInit[c] || 0) + 1; else if (st === "Payment Dismissed" || st === "Payment Abandoned") catAbn[c] = (catAbn[c] || 0) + 1; });
+    const catStr = Object.entries(catCount).sort((a, b) => b[1] - a[1]).map(([c, n]) => c + ":" + n + "rec/" + (catInit[c] || 0) + "payInit/" + (catAbn[c] || 0) + "payAbn/" + (catPaid[c] || 0) + "paySucc").join(", ");
     const goalCount: Record<string, number> = {}, intCount: Record<string, number> = {}, q4All: Record<string, number> = {}, q4Paid: Record<string, number> = {};
     qs.forEach(s => { if (s.q3_answer) goalCount[s.q3_answer] = (goalCount[s.q3_answer] || 0) + 1; if (s.q1_answer) intCount[s.q1_answer] = (intCount[s.q1_answer] || 0) + 1; String(s.q4_answer || "").split(",").forEach(v => { v = v.trim(); if (v) q4All[v] = (q4All[v] || 0) + 1; }); });
     paid.forEach(s => { String(s.q4_answer || "").split(",").forEach(v => { v = v.trim(); if (v) q4Paid[v] = (q4Paid[v] || 0) + 1; }); });
@@ -396,6 +396,7 @@ export default function App() {
   const [showIntMgr, setShowIntMgr] = useState(false);
   const [newIntNum, setNewIntNum] = useState("");
   const [dateRange, setDateRange] = useState({ from: "", to: "" });
+  const [cmVisibleCols, setCmVisibleCols] = useState<Set<string>>(new Set(["rec", "payInit", "payAbn", "payOK"]));
   const qaRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -559,6 +560,30 @@ export default function App() {
   const catEntries = Object.entries(catCountMap).sort((a, b) => b[1].total - a[1].total);
   const maxCatVal = catEntries[0]?.[1].total || 1;
 
+  const CM_STATUS_COLS = [
+    { key: "rec", label: "Rec Gen", short: "REC GEN", color: "#0369a1", bg: "#f0f9ff" },
+    { key: "payInit", label: "Pay Init", short: "PAY INIT", color: "#b45309", bg: "#fffbeb" },
+    { key: "payAbn", label: "Pay Abn", short: "PAY ABN", color: "#dc2626", bg: "#fef2f2" },
+    { key: "payOK", label: "Pay Succ", short: "PAY SUCC", color: "#059669", bg: "#f0fdf4" },
+  ];
+  const cmActiveCols = CM_STATUS_COLS.filter(c => cmVisibleCols.has(c.key));
+  const cmSessions = quizRows.filter(s => inRange(s._date, dateRange));
+  const cmDates = [...new Set(cmSessions.map(s => s._date).filter(Boolean))].sort();
+  const cmGetBucket = (status: string): "rec" | "payInit" | "payAbn" | "payOK" =>
+    status === "Payment Successful" ? "payOK" : status === "Payment Intiated" ? "payInit" : (status === "Payment Dismissed" || status === "Payment Abandoned") ? "payAbn" : "rec";
+  type CmCount = { rec: number; payInit: number; payAbn: number; payOK: number };
+  const cmMatrix: Record<string, Record<string, CmCount>> = {};
+  cmDates.forEach(d => { cmMatrix[d] = {}; ALL_RECS.forEach(cat => { cmMatrix[d][cat] = { rec: 0, payInit: 0, payAbn: 0, payOK: 0 }; }); });
+  cmSessions.forEach(s => {
+    const cat = s.recommendation; if (!cat || !cmMatrix[s._date]) return;
+    if (!cmMatrix[s._date][cat]) cmMatrix[s._date][cat] = { rec: 0, payInit: 0, payAbn: 0, payOK: 0 };
+    cmMatrix[s._date][cat][cmGetBucket(s["Status for Analytics"])]++;
+  });
+  const cmCatTotals: Record<string, CmCount> = {};
+  ALL_RECS.forEach(cat => { cmCatTotals[cat] = { rec: 0, payInit: 0, payAbn: 0, payOK: 0 }; cmDates.forEach(d => { const v = cmMatrix[d]?.[cat]; if (v) { cmCatTotals[cat].rec += v.rec; cmCatTotals[cat].payInit += v.payInit; cmCatTotals[cat].payAbn += v.payAbn; cmCatTotals[cat].payOK += v.payOK; } }); });
+  const cmGrandTotal: CmCount = { rec: 0, payInit: 0, payAbn: 0, payOK: 0 };
+  ALL_RECS.forEach(cat => { const t = cmCatTotals[cat]; cmGrandTotal.rec += t.rec; cmGrandTotal.payInit += t.payInit; cmGrandTotal.payAbn += t.payAbn; cmGrandTotal.payOK += t.payOK; });
+
   const SUGGESTED_QS = [
     "What's driving any conversion drops?",
     "Which categories convert best to payment?",
@@ -601,7 +626,7 @@ export default function App() {
 
       {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "1px solid #e8e3dc", padding: "0 20px", background: "#faf9f7" }}>
-        {([["table", "Data Table"], ["sessions", quizRows.length ? `Quiz Sessions (${quizRows.length})` : "Quiz Sessions"], ["recs", "Recommendations"], ["qa", "Ask AI"]] as [string, string][]).map(([k, l]) => (
+        {([["table", "Data Table"], ["sessions", quizRows.length ? `Quiz Sessions (${quizRows.length})` : "Quiz Sessions"], ["recs", "Recommendations"], ["qa", "Ask AI"], ["matrix", "Category Matrix"]] as [string, string][]).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{ background: "none", border: "none", padding: "12px 0", marginRight: 24, fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", color: tab === k ? "#1a1a1a" : "#9b9590", borderBottom: tab === k ? "2px solid #1a1a1a" : "2px solid transparent", transition: "all .15s" }}>{l}</button>
         ))}
       </div>
@@ -843,6 +868,93 @@ export default function App() {
             );
           })}
         </div>}
+      </div>}
+
+      {/* CATEGORY MATRIX */}
+      {tab === "matrix" && <div style={{ padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Category Matrix</div>
+            <div style={{ fontSize: 11, color: "#9b9590" }}>
+              {cmDates.length > 0 ? `${cmDates.length} day${cmDates.length !== 1 ? "s" : ""} · ${cmSessions.length} session${cmSessions.length !== 1 ? "s" : ""} · funnel events per talent category` : "Upload a telemetry CSV to populate this view"}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, color: "#9b9590", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>Show</span>
+            {CM_STATUS_COLS.map(col => (
+              <button key={col.key} onClick={() => setCmVisibleCols(prev => { const next = new Set(prev); if (next.has(col.key)) { if (next.size > 1) next.delete(col.key); } else next.add(col.key); return next; })} style={{ background: cmVisibleCols.has(col.key) ? col.bg : "#fff", color: cmVisibleCols.has(col.key) ? col.color : "#9b9590", border: cmVisibleCols.has(col.key) ? `1.5px solid ${col.color}40` : "1px solid #e8e3dc", borderRadius: 5, padding: "4px 10px", fontSize: 11, fontWeight: cmVisibleCols.has(col.key) ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>{col.label}</button>
+            ))}
+          </div>
+        </div>
+        {cmDates.length === 0
+          ? <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: 48, textAlign: "center", color: "#9b9590" }}>
+              <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>No session data loaded</div>
+              <div style={{ fontSize: 11 }}>Upload a telemetry CSV using the button in the header</div>
+            </div>
+          : <div style={{ overflowX: "auto", border: "1px solid #e8e3dc", borderRadius: 8, background: "#fff", maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
+              <table style={{ borderCollapse: "collapse", fontSize: 11, minWidth: "max-content" }}>
+                <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
+                  <tr>
+                    <th rowSpan={2} style={{ ...TH("left", "#f5f2ee"), position: "sticky", left: 0, zIndex: 6, borderRight: "2px solid #d5d0c8", minWidth: 80, verticalAlign: "bottom", paddingBottom: 11 }}>DATE</th>
+                    {ALL_RECS.map(cat => (
+                      <th key={cat} colSpan={cmActiveCols.length + 1} style={{ ...TH("center", "#f5f2ee"), borderRight: "2px solid #d5d0c8", fontSize: 10, color: "#1a1a1a", letterSpacing: "-0.01em" }}>{cat}</th>
+                    ))}
+                    <th colSpan={cmActiveCols.length + 1} style={{ ...TH("center", "#f0ede8"), fontSize: 10, color: "#6b6560" }}>Row Total</th>
+                  </tr>
+                  <tr>
+                    {ALL_RECS.map(cat => (
+                      <>
+                        {cmActiveCols.map(col => <th key={cat + col.key} style={{ ...TH("right", "#faf9f7"), color: col.color, borderBottom: "2px solid #1a1a1a" }}>{col.short}</th>)}
+                        <th key={cat + "tot"} style={{ ...TH("right", "#faf9f7"), color: "#6b6560", borderBottom: "2px solid #1a1a1a", borderRight: "2px solid #d5d0c8" }}>TOTAL</th>
+                      </>
+                    ))}
+                    {cmActiveCols.map(col => <th key={"rt" + col.key} style={{ ...TH("right", "#f0ede8"), color: col.color, borderBottom: "2px solid #1a1a1a" }}>{col.short}</th>)}
+                    <th style={{ ...TH("right", "#f0ede8"), color: "#1a1a1a", borderBottom: "2px solid #1a1a1a" }}>TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cmDates.map((date, di) => {
+                    const rowT: CmCount = { rec: 0, payInit: 0, payAbn: 0, payOK: 0 };
+                    ALL_RECS.forEach(cat => { const v = cmMatrix[date]?.[cat]; if (v) { rowT.rec += v.rec; rowT.payInit += v.payInit; rowT.payAbn += v.payAbn; rowT.payOK += v.payOK; } });
+                    const rowActiveSum = cmActiveCols.reduce((s, c) => s + (rowT as Record<string, number>)[c.key], 0);
+                    const rowBg = di % 2 === 0 ? "#fff" : "#fdfcfa";
+                    return (
+                      <tr key={date} className="rh">
+                        <td style={{ ...TD("left", rowBg), position: "sticky", left: 0, zIndex: 1, borderRight: "2px solid #e8e3dc", fontFamily: "monospace", fontSize: 10, color: "#6b6560" }}>{date.slice(5)}</td>
+                        {ALL_RECS.map(cat => {
+                          const d = cmMatrix[date]?.[cat] || { rec: 0, payInit: 0, payAbn: 0, payOK: 0 };
+                          const catSum = cmActiveCols.reduce((s, c) => s + (d as Record<string, number>)[c.key], 0);
+                          return (
+                            <>
+                              {cmActiveCols.map(col => { const v = (d as Record<string, number>)[col.key]; return <td key={cat + col.key} style={{ ...TD("right", v ? col.bg + "40" : rowBg), color: v ? col.color : "#ddd", fontFamily: "monospace" }}>{v || "—"}</td>; })}
+                              <td key={cat + "tot"} style={{ ...TD("right", rowBg), fontFamily: "monospace", fontWeight: 600, borderRight: "2px solid #e8e3dc", color: catSum ? "#1a1a1a" : "#ddd" }}>{catSum || "—"}</td>
+                            </>
+                          );
+                        })}
+                        {cmActiveCols.map(col => { const v = (rowT as Record<string, number>)[col.key]; return <td key={"rt" + col.key} style={{ ...TD("right", "#f5f2ee"), fontFamily: "monospace", fontWeight: 600, color: v ? col.color : "#ddd" }}>{v || "—"}</td>; })}
+                        <td style={{ ...TD("right", "#f0ede8"), fontFamily: "monospace", fontWeight: 700 }}>{rowActiveSum || "—"}</td>
+                      </tr>
+                    );
+                  })}
+                  <tr style={{ borderTop: "2px solid #1a1a1a" }}>
+                    <td style={{ ...TD("left", "#f5f2ee"), position: "sticky", left: 0, zIndex: 1, borderRight: "2px solid #d5d0c8", fontFamily: "monospace", fontSize: 10, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>TOTAL</td>
+                    {ALL_RECS.map(cat => {
+                      const t = cmCatTotals[cat];
+                      const catSum = cmActiveCols.reduce((s, c) => s + (t as Record<string, number>)[c.key], 0);
+                      return (
+                        <>
+                          {cmActiveCols.map(col => <td key={cat + col.key} style={{ ...TD("right", "#f5f2ee"), fontFamily: "monospace", fontWeight: 700, color: col.color }}>{(t as Record<string, number>)[col.key] || 0}</td>)}
+                          <td key={cat + "tot"} style={{ ...TD("right", "#f0ede8"), fontFamily: "monospace", fontWeight: 700, borderRight: "2px solid #d5d0c8", color: "#1a1a1a" }}>{catSum}</td>
+                        </>
+                      );
+                    })}
+                    {cmActiveCols.map(col => <td key={"gt" + col.key} style={{ ...TD("right", "#e8e3dc"), fontFamily: "monospace", fontWeight: 700, color: col.color }}>{(cmGrandTotal as Record<string, number>)[col.key] || 0}</td>)}
+                    <td style={{ ...TD("right", "#e0dbd3"), fontFamily: "monospace", fontWeight: 700, fontSize: 12 }}>{cmActiveCols.reduce((s, c) => s + (cmGrandTotal as Record<string, number>)[c.key], 0)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+        }
       </div>}
 
       {/* ASK AI */}
