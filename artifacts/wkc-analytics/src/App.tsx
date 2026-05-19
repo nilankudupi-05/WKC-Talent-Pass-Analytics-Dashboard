@@ -567,7 +567,9 @@ export default function App() {
     { key: "payOK", label: "Pay Succ", short: "PAY SUCC", color: "#059669", bg: "#f0fdf4" },
   ];
   const cmActiveCols = CM_STATUS_COLS.filter(c => cmVisibleCols.has(c.key));
-  const cmSessions = quizRows.filter(s => inRange(s._date, dateRange));
+  const cmAllSessions = quizRows.filter(s => inRange(s._date, dateRange));
+  const cmSessions = cmAllSessions.filter(s => !!s.recommendation);
+  const cmUnmapped = cmAllSessions.length - cmSessions.length;
   const cmDates = [...new Set(cmSessions.map(s => s._date).filter(Boolean))].sort();
   const cmGetBucket = (status: string): "rec" | "payInit" | "payAbn" | "payOK" =>
     status === "Payment Successful" ? "payOK" : status === "Payment Intiated" ? "payInit" : (status === "Payment Dismissed" || status === "Payment Abandoned") ? "payAbn" : "rec";
@@ -876,7 +878,9 @@ export default function App() {
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Category Matrix</div>
             <div style={{ fontSize: 11, color: "#9b9590" }}>
-              {cmDates.length > 0 ? `${cmDates.length} day${cmDates.length !== 1 ? "s" : ""} · ${cmSessions.length} session${cmSessions.length !== 1 ? "s" : ""} · funnel events per talent category` : "Upload a telemetry CSV to populate this view"}
+              {cmDates.length > 0
+                ? `${cmDates.length} day${cmDates.length !== 1 ? "s" : ""} · ${cmSessions.length} session${cmSessions.length !== 1 ? "s" : ""} with a category${cmUnmapped > 0 ? ` · ${cmUnmapped} without a recommendation (excluded)` : ""}`
+                : "Upload a telemetry CSV to populate this view"}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
