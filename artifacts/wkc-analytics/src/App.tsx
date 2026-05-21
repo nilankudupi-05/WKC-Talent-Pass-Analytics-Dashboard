@@ -234,7 +234,8 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     const date = events[0]?.r.created_on?.slice(0, 10) || "";
     const dateObj = date ? new Date(date) : null;
     const quizDone = answers[4] != null;
-    const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? "Quiz Completed" : "");
+    const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || "";
+    const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? (recommendation ? "Quiz Completed" : "No Recommendation") : "");
     const mobile = (gp(uEvt?.p, m.userMobilePath) as string) || "";
     if (internalNums.includes(mobile.trim())) return null;
     const lessThan2 = Object.entries(timeSec).filter(([, v]) => v <= 2).map(([k]) => k.replace(/_time_seconds$/, "")).join(", ");
@@ -246,7 +247,7 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       Datevalue: dateObj ? dateObj.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "",
       _date: date, q1_answer: answers[1]?.answer || "", q2_answer: answers[2]?.answer || "",
       q3_answer: answers[3]?.answer || "", q4_answer: answers[4]?.answer || "",
-      recommendation: (gp(recEvt?.p, m.recNamePath) as string) || "",
+      recommendation,
       "Status for Analytics": status, payment_plan: payPlan,
       button_clicked: (gp(events[events.length - 1]?.p, "data.buttonId") as string) || "",
       "Time Spent Less Than 2 Seconds": lessThan2,
@@ -310,8 +311,8 @@ const TD = (a: string = "right", bg: string = "#faf9f7"): React.CSSProperties =>
 const BTN = (v: string = "default"): React.CSSProperties => ({ background: v === "primary" ? "#1a1a1a" : "#f0ede8", color: v === "primary" ? "#fff" : "#1a1a1a", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" });
 const INP: React.CSSProperties = { border: "1px solid #e8e3dc", borderRadius: 5, padding: "5px 9px", fontSize: 11, background: "#fff", color: "#1a1a1a", fontFamily: "inherit", outline: "none" };
 const DPILL: React.CSSProperties = { background: "#f59e0b18", color: "#b45309", fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 3, display: "inline-block", marginTop: 2, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const STATUS_COLORS: Record<string, { c: string; b: string }> = { s: { c: "#059669", b: "#f0fdf4" }, i: { c: "#0369a1", b: "#f0f9ff" }, d: { c: "#dc2626", b: "#fef2f2" }, q: { c: "#6b6560", b: "#f5f2ee" } };
-const scOf = (s: string) => s === "Payment Successful" ? STATUS_COLORS.s : s === "Payment Intiated" ? STATUS_COLORS.i : (s || "").includes("Dismiss") || (s || "").includes("Abandon") ? STATUS_COLORS.d : STATUS_COLORS.q;
+const STATUS_COLORS: Record<string, { c: string; b: string }> = { s: { c: "#059669", b: "#f0fdf4" }, i: { c: "#0369a1", b: "#f0f9ff" }, d: { c: "#dc2626", b: "#fef2f2" }, q: { c: "#6b6560", b: "#f5f2ee" }, n: { c: "#92400e", b: "#fffbeb" } };
+const scOf = (s: string) => s === "Payment Successful" ? STATUS_COLORS.s : s === "Payment Intiated" ? STATUS_COLORS.i : (s || "").includes("Dismiss") || (s || "").includes("Abandon") ? STATUS_COLORS.d : s === "No Recommendation" ? STATUS_COLORS.n : STATUS_COLORS.q;
 const Q4L: Record<string, string> = { "chance_to_be_among_indias_best": "India's best", "local_to_national_leaderboard": "Leaderboard", "medals_and_certificates": "Medals", "personalized_feedback_report": "Feedback", "school_recognition": "School rec.", "showcase_your_childs_talent": "Showcase" };
 
 function Spin() { return <span style={{ display: "inline-block", width: 12, height: 12, border: "1.5px solid #e5e0d8", borderTopColor: "#1a1a1a", borderRadius: "50%", animation: "spin .7s linear infinite" }} />; }
@@ -511,7 +512,7 @@ export default function App() {
 
   const uniqueQDates = [...new Set(quizRows.map(r => r.Datevalue).filter(Boolean))].sort();
   const ALL_RECS = ["Build It!", "Color Wizards", "Dance Wizards", "Handwriting Champs", "Instrumental Genius", "Master Orator", "Recite It! - English", "Singing Stars", "Tell Ur Tale"];
-  const ALL_STATS = ["Quiz Completed", "Payment Intiated", "Payment Successful", "Payment Dismissed", "Payment Abandoned"];
+  const ALL_STATS = ["Quiz Completed", "No Recommendation", "Payment Intiated", "Payment Successful", "Payment Dismissed", "Payment Abandoned"];
   const TYPE_META: Record<string, { label: string; color: string; bg: string; dot: string }> = {
     action: { label: "Action", color: "#1a1a1a", bg: "#f5f2ee", dot: "#1a1a1a" },
     watch: { label: "Watch", color: "#0369a1", bg: "#f0f9ff", dot: "#0369a1" },
@@ -569,8 +570,11 @@ export default function App() {
   const cmActiveCols = CM_STATUS_COLS.filter(c => cmVisibleCols.has(c.key));
   const cmAllSessions = quizRows.filter(s => inRange(s._date, dateRange));
   const cmSessions = cmAllSessions.filter(s => !!s.recommendation);
-  const cmUnmapped = cmAllSessions.length - cmSessions.length;
-  const cmDates = [...new Set(cmSessions.map(s => s._date).filter(Boolean))].sort();
+  const cmNoRecSessions = cmAllSessions.filter(s => s["Status for Analytics"] === "No Recommendation");
+  const cmNoFinish = cmAllSessions.length - cmSessions.length - cmNoRecSessions.length;
+  const cmNoRecPerDay: Record<string, number> = {};
+  cmNoRecSessions.forEach(s => { if (s._date) cmNoRecPerDay[s._date] = (cmNoRecPerDay[s._date] || 0) + 1; });
+  const cmDates = [...new Set([...cmSessions.map(s => s._date), ...cmNoRecSessions.map(s => s._date)].filter(Boolean))].sort();
   const cmGetBucket = (status: string): "rec" | "payInit" | "payAbn" | "payOK" =>
     status === "Payment Successful" ? "payOK" : status === "Payment Intiated" ? "payInit" : (status === "Payment Dismissed" || status === "Payment Abandoned") ? "payAbn" : "rec";
   type CmCount = { rec: number; payInit: number; payAbn: number; payOK: number };
@@ -879,7 +883,7 @@ export default function App() {
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Category Matrix</div>
             <div style={{ fontSize: 11, color: "#9b9590" }}>
               {cmDates.length > 0
-                ? `${cmDates.length} day${cmDates.length !== 1 ? "s" : ""} · ${cmSessions.length} session${cmSessions.length !== 1 ? "s" : ""} with a category${cmUnmapped > 0 ? ` · ${cmUnmapped} without a recommendation (excluded)` : ""}`
+                ? `${cmDates.length} day${cmDates.length !== 1 ? "s" : ""} · ${cmSessions.length} session${cmSessions.length !== 1 ? "s" : ""} with a category${cmNoRecSessions.length > 0 ? ` · ${cmNoRecSessions.length} completed quiz, no recommendation` : ""}${cmNoFinish > 0 ? ` · ${cmNoFinish} did not finish quiz` : ""}`
                 : "Upload a telemetry CSV to populate this view"}
             </div>
           </div>
@@ -903,6 +907,7 @@ export default function App() {
                     {ALL_RECS.map(cat => (
                       <th key={cat} colSpan={cmActiveCols.length + 1} style={{ ...TH("center", "#f5f2ee"), borderRight: "2px solid #d5d0c8", fontSize: 10, color: "#1a1a1a", letterSpacing: "-0.01em" }}>{cat}</th>
                     ))}
+                    <th rowSpan={2} style={{ ...TH("center", "#fffbeb"), borderRight: "2px solid #d5d0c8", fontSize: 10, color: "#92400e", fontWeight: 600, verticalAlign: "bottom", paddingBottom: 11, borderBottom: "2px solid #1a1a1a" }}>NO REC</th>
                     <th colSpan={cmActiveCols.length + 1} style={{ ...TH("center", "#f0ede8"), fontSize: 10, color: "#6b6560" }}>Row Total</th>
                   </tr>
                   <tr>
@@ -935,8 +940,9 @@ export default function App() {
                             </>
                           );
                         })}
+                        <td style={{ ...TD("right", "#fffbeb"), fontFamily: "monospace", fontWeight: 600, color: cmNoRecPerDay[date] ? "#92400e" : "#ddd", borderRight: "2px solid #e8e3dc" }}>{cmNoRecPerDay[date] || "—"}</td>
                         {cmActiveCols.map(col => { const v = (rowT as Record<string, number>)[col.key]; return <td key={"rt" + col.key} style={{ ...TD("right", "#f5f2ee"), fontFamily: "monospace", fontWeight: 600, color: v ? col.color : "#ddd" }}>{v || "—"}</td>; })}
-                        <td style={{ ...TD("right", "#f0ede8"), fontFamily: "monospace", fontWeight: 700 }}>{rowActiveSum || "—"}</td>
+                        <td style={{ ...TD("right", "#f0ede8"), fontFamily: "monospace", fontWeight: 700 }}>{(rowActiveSum + (cmNoRecPerDay[date] || 0)) || "—"}</td>
                       </tr>
                     );
                   })}
@@ -952,8 +958,9 @@ export default function App() {
                         </>
                       );
                     })}
+                    <td style={{ ...TD("right", "#fffbeb"), fontFamily: "monospace", fontWeight: 700, color: "#92400e", borderRight: "2px solid #d5d0c8" }}>{cmNoRecSessions.length || 0}</td>
                     {cmActiveCols.map(col => <td key={"gt" + col.key} style={{ ...TD("right", "#e8e3dc"), fontFamily: "monospace", fontWeight: 700, color: col.color }}>{(cmGrandTotal as Record<string, number>)[col.key] || 0}</td>)}
-                    <td style={{ ...TD("right", "#e0dbd3"), fontFamily: "monospace", fontWeight: 700, fontSize: 12 }}>{cmActiveCols.reduce((s, c) => s + (cmGrandTotal as Record<string, number>)[c.key], 0)}</td>
+                    <td style={{ ...TD("right", "#e0dbd3"), fontFamily: "monospace", fontWeight: 700, fontSize: 12 }}>{cmActiveCols.reduce((s, c) => s + (cmGrandTotal as Record<string, number>)[c.key], 0) + cmNoRecSessions.length}</td>
                   </tr>
                 </tbody>
               </table>
