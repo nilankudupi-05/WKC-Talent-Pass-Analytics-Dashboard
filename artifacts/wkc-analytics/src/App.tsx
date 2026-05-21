@@ -285,11 +285,11 @@ function buildCtx(
   return "You are an analytics assistant for WizKids Carnival Talent Pass — a digital national kids championship.\nFunnel: FB Ad > Landing Page > Quiz (4 Qs) > Recommendation > Pricing > Payment. LPV from Meta pixel.\n\nDeployments:\n" + dStr + "\n\nData:\n" + rStr + sessStr;
 }
 
-async function callClaude(system: string, user: string): Promise<string> {
+async function callClaude(system: string, user: string, maxTokens = 1000): Promise<string> {
   try {
     const r = await fetch("/api/ai/complete", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system, messages: [{ role: "user", content: user }], maxTokens: 1000 }),
+      body: JSON.stringify({ system, messages: [{ role: "user", content: user }], maxTokens }),
     });
     const d = await r.json() as { text?: string; error?: string };
     if (d.error) return "Error: " + d.error;
@@ -437,7 +437,7 @@ export default function App() {
   const genRecs = async (currentRows: RowItem[], currentDeps: DepItem[], sessions?: SessionRow[]) => {
     setRecLoad(true);
     const ctx = buildCtx(currentRows, currentDeps, sessions || quizRows, dateRange);
-    const result = await callClaude(ctx, 'Return ONLY a JSON array of recommendation objects, no markdown.\nEach: {"type":"action"|"watch"|"anomaly","title":"max 8 words","detail":"2-3 sentences with specific dates/numbers"}\n6-8 items total.');
+    const result = await callClaude(ctx, 'Return ONLY a JSON array of recommendation objects, no markdown.\nEach: {"type":"action"|"watch"|"anomaly","title":"max 8 words","detail":"2-3 sentences with specific dates/numbers"}\n6-8 items total.', 2000);
     try { setRecs(JSON.parse(result.split("```json").join("").split("```").join("").trim())); }
     catch { setRecs([{ type: "action", title: "Analysis complete", detail: result }]); }
     setRecLoad(false);
@@ -654,7 +654,7 @@ export default function App() {
         {depForm.show && <div className="fu" style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "10px 14px", marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input value={depForm.date} onChange={e => setDepForm(f => ({ ...f, date: e.target.value }))} placeholder="2026-05-20" style={{ ...INP, width: 110, fontFamily: "monospace" }} />
           <input value={depForm.label} onChange={e => setDepForm(f => ({ ...f, label: e.target.value }))} placeholder="What changed?" style={{ ...INP, width: 200 }} />
-          <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { setDeps(d => [...d, { date: depForm.date, label: depForm.label }]); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
+          <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { setDeps(d => [...d, { date: depForm.date, label: depForm.label }]); setRows(prev => { if (prev.find(r => r.date === depForm.date)) return prev; const next = [...prev, { date: depForm.date, meta: { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }, tel: null }]; return next.sort((a, b) => a.date.localeCompare(b.date)); }); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
           <button style={BTN()} onClick={() => setDepForm(f => ({ ...f, show: false }))}>Cancel</button>
         </div>}
 
