@@ -378,7 +378,15 @@ interface MappingCacheItem { fp: string; mapping: MappingState; }
 
 export default function App() {
   const [tab, setTab] = useState("table");
-  const [rows, setRows] = useState<RowItem[]>(() => DATES.map(date => ({ date, meta: SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }, tel: null })));
+  const [rows, setRows] = useState<RowItem[]>(() => {
+    let saved: Record<string, Record<string, string>> = {};
+    try { saved = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {}; } catch {}
+    return DATES.map(date => ({
+      date,
+      meta: { ...(SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }), ...(saved[date] || {}) },
+      tel: null,
+    }));
+  });
   const [deps, setDeps] = useState<DepItem[]>(SEED_DEPS);
   const [mode, setMode] = useState("raw");
   const [editCell, setEditCell] = useState<{ date: string; field: string } | null>(null);
@@ -486,6 +494,11 @@ export default function App() {
   const commitEdit = () => {
     if (!editCell) return;
     setRows(prev => prev.map(r => r.date === editCell.date ? { ...r, meta: { ...r.meta, [editCell.field]: editVal } } : r));
+    try {
+      const saved: Record<string, Record<string, string>> = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {};
+      saved[editCell.date] = { ...(saved[editCell.date] || {}), [editCell.field]: editVal };
+      localStorage.setItem("wkc_meta", JSON.stringify(saved));
+    } catch {}
     setEditCell(null);
   };
 
@@ -658,6 +671,11 @@ export default function App() {
             </div>
             <button style={BTN()} onClick={genComments} disabled={commLoad}>{commLoad ? <Spin /> : "✦ AI Comments"}</button>
             <button style={BTN()} onClick={() => setDepForm(f => ({ ...f, show: !f.show }))}>+ Deploy</button>
+            <button style={BTN()} title="Clear all saved Meta edits and restore seed values" onClick={() => {
+              if (!confirm("Reset all Meta values to their seed defaults? This will clear your saved edits.")) return;
+              try { localStorage.removeItem("wkc_meta"); } catch {}
+              setRows(prev => prev.map(r => ({ ...r, meta: SEED_META[r.date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" } })));
+            }}>Reset Meta</button>
           </div>
         </div>
 
