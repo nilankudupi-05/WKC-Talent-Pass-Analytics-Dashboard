@@ -822,7 +822,7 @@ export default function App() {
                     {mode === "raw" && <>
                       {META_M.map(c => (
                         <td key={c.key} className="ed" style={TD("right", "#fffbf5")} onClick={() => { setEditCell({ date: row.date, field: c.key }); setEditVal(row.meta[c.key]); }}>
-                          {isEd(c.key) ? <input autoFocus value={editVal} onChange={e => setEditVal(e.target.value)} onBlur={commitEdit} onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditCell(null); }} style={{ border: "1px solid #1a1a1a", borderRadius: 3, padding: "2px 5px", fontSize: 11, width: 75, textAlign: "right", outline: "none", fontFamily: "monospace" }} /> : <span style={{ color: row.meta[c.key] ? "#1a1a1a" : "#ccc", fontFamily: "monospace" }}>{row.meta[c.key] ? ((c as { pre?: string }).pre || "") + row.meta[c.key] : "—"}</span>}
+                          {isEd(c.key) ? <input autoFocus value={editVal} onChange={e => setEditVal(e.target.value)} onFocus={e => e.target.select()} onBlur={commitEdit} onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditCell(null); }} style={{ border: "1px solid #1a1a1a", borderRadius: 3, padding: "2px 5px", fontSize: 11, width: 75, textAlign: "right", outline: "none", fontFamily: "monospace" }} /> : <span style={{ color: row.meta[c.key] ? "#1a1a1a" : "#ccc", fontFamily: "monospace" }}>{row.meta[c.key] ? ((c as { pre?: string }).pre || "") + row.meta[c.key] : "—"}</span>}
                         </td>
                       ))}
                       {META_D.map(c => {
