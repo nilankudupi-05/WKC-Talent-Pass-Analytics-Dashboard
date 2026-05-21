@@ -381,7 +381,8 @@ export default function App() {
   const [rows, setRows] = useState<RowItem[]>(() => {
     let saved: Record<string, Record<string, string>> = {};
     try { saved = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {}; } catch {}
-    return DATES.map(date => ({
+    const allDates = Array.from(new Set([...DATES, ...Object.keys(saved)])).sort();
+    return allDates.map(date => ({
       date,
       meta: { ...(SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }), ...(saved[date] || {}) },
       tel: null,
@@ -500,6 +501,12 @@ export default function App() {
       localStorage.setItem("wkc_meta", JSON.stringify(saved));
     } catch {}
     setEditCell(null);
+  };
+
+  const resetMetaData = () => {
+    try { localStorage.removeItem("wkc_meta"); } catch {}
+    setRows(prev => prev.map(r => ({ ...r, meta: SEED_META[r.date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" } })));
+    setMappingNote("Meta data reset — restored to seed values.");
   };
 
   const addIntNum = (n: string) => {
@@ -766,6 +773,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button style={BTN()} onClick={() => setShowIntMgr(v => !v)}>&#8856; Internal ({internalNums.length})</button>
             <button style={BTN()} onClick={() => { setMappingState(null); try { localStorage.removeItem("wkc_schema"); } catch {} setMappingNote("Mapping cache cleared — will re-map on next CSV upload."); }} title="Force Claude to re-map fields on next upload">Reset Mapping</button>
+            <button style={BTN()} onClick={resetMetaData} title="Clear saved Meta edits and restore seed values">Reset Meta Data</button>
             <div style={{ fontSize: 11, color: "#9b9590", padding: "6px 10px", background: "#f5f2ee", borderRadius: 6, display: "flex", alignItems: "center" }}>Populated from Telemetry CSV ↑</div>
           </div>
         </div>
