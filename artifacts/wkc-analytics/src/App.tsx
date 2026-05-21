@@ -183,14 +183,26 @@ const DEFAULT_MAPPING: MappingState = {
 
 async function fetchAIMapping(rawRows: Record<string, string>[]): Promise<MappingState> {
   const sample = JSON.stringify(sampleByCategory(rawRows), null, 2).slice(0, 10000);
-  const prompt = "Map these quiz funnel telemetry events to field paths. Return ONLY JSON (no markdown) with keys: quizCategory,quizStepPath,quizAnswerPath,quizQuestionIdPath,recCategory,recNamePath,paymentCategory,paymentStepPath,paymentPlanPath,paymentCategoryPath,userNamePath,userMobilePath,userAgeGroupPath,utmPath,telemetryCategory,timeSpentTypePath,timeSpentTypeValue,timeSpentSectionPath,timeSpentSecondsPath,sectionIdToColumnMap,changes.\n\nEvents:\n" + sample;
+  const presentCategories = [...new Set(rawRows.slice(0, 500).map(r => { try { return JSON.parse(r.response || "{}").category as string; } catch { return ""; } }).filter(Boolean))];
+  const prompt = "Map these quiz funnel telemetry events to field paths. Return ONLY JSON (no markdown) with keys: quizCategory,quizStepPath,quizAnswerPath,quizQuestionIdPath,recCategory,recNamePath,paymentCategory,paymentStepPath,paymentPlanPath,paymentCategoryPath,userNamePath,userMobilePath,userAgeGroupPath,utmPath,telemetryCategory,timeSpentTypePath,timeSpentTypeValue,timeSpentSectionPath,timeSpentSecondsPath,sectionIdToColumnMap,changes.\n\nCategory string values MUST be chosen from this list (exact match, no inventing): " + JSON.stringify(presentCategories) + ". Never return null for a category field — pick the closest match from the list.\n\nEvents:\n" + sample;
   const res = await fetch("/api/ai/complete", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages: [{ role: "user", content: prompt }], maxTokens: 2000 }),
   });
   const d = await res.json() as { text: string };
   const text = (d.text || "").split("```json").join("").split("```").join("").trim();
-  return JSON.parse(text) as MappingState;
+  const aiRaw = JSON.parse(text) as Partial<MappingState>;
+  const merged = { ...DEFAULT_MAPPING } as unknown as Record<string, unknown>;
+  Object.keys(DEFAULT_MAPPING).forEach(k => {
+    const v = (aiRaw as Record<string, unknown>)[k];
+    if (v != null && v !== "") merged[k] = v;
+  });
+  const catSet = new Set(presentCategories);
+  (["quizCategory", "recCategory", "paymentCategory", "telemetryCategory"] as const).forEach(k => {
+    if (!catSet.has(merged[k] as string)) merged[k] = DEFAULT_MAPPING[k];
+  });
+  if (aiRaw.changes) merged.changes = aiRaw.changes;
+  return merged as unknown as MappingState;
 }
 
 interface SessionRow {
@@ -393,7 +405,7 @@ export default function App() {
   const [editCell, setEditCell] = useState<{ date: string; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
   const [csvLoading, setCsvLoading] = useState(false);
-  const [mappingState, setMappingState] = useState<MappingCacheItem | null>(() => { try { const c = localStorage.getItem("wkc_schema"); if (!c) return null; const parsed = JSON.parse(c) as MappingCacheItem; if (parsed.mapping?.timeSpentTypeValue === "time_spent" || parsed.mapping?.timeSpentSecondsPath === "data.seconds") { localStorage.removeItem("wkc_schema"); return null; } return parsed; } catch { return null; } });
+  const [mappingState, setMappingState] = useState<MappingCacheItem | null>(() => { try { const c = localStorage.getItem("wkc_schema"); if (!c) return null; const parsed = JSON.parse(c) as MappingCacheItem; if (parsed.mapping?.timeSpentTypeValue === "time_spent" || parsed.mapping?.timeSpentSecondsPath === "data.seconds" || !parsed.mapping?.paymentCategory || !parsed.mapping?.paymentStepPath || !parsed.mapping?.quizCategory || !parsed.mapping?.quizStepPath) { localStorage.removeItem("wkc_schema"); return null; } return parsed; } catch { return null; } });
   const [mappingLoading, setMappingLoading] = useState(false);
   const [mappingNote, setMappingNote] = useState("");
   const [recs, setRecs] = useState<{ type: string; title: string; detail: string }[] | null>(null);
