@@ -135,12 +135,22 @@ function computeTel(rawRows: Record<string, string>[], date: string): TelRow | n
   if (!day.length) return null;
   const parsed = day.map(r => { try { return { sid: r.session_id, p: JSON.parse(r.response || "{}") }; } catch { return { sid: r.session_id, p: {} }; } });
   const sid = (fn: (x: { sid: string; p: Record<string, unknown> }) => boolean) => new Set(parsed.filter(fn).map(x => x.sid)).size;
+  // Determine final payment state per session using same priority as buildSessions
+  const PAY_PRI = ["payment_successful", "payment_initiated", "payment_dismissed", "payment_abandoned"];
+  const sessPayIdx: Record<string, number> = {};
+  parsed.forEach(({ sid: s, p }) => {
+    if ((p as Record<string, unknown>).category !== "PAYMENT") return;
+    const step = ((p as Record<string, Record<string, unknown>>).data?.step as string) || "";
+    const idx = PAY_PRI.indexOf(step); if (idx === -1) return;
+    if (!(s in sessPayIdx) || idx < sessPayIdx[s]) sessPayIdx[s] = idx;
+  });
+  const payFinal = Object.values(sessPayIdx);
   return {
     quizStarted: sid(({ p }) => p.category === "QUIZ"),
-    quizCompleted: sid(({ p }) => p.category === "QUIZ" && (p as Record<string, Record<string, unknown>>).data?.quiz?.step === 4),
-    payInitiated: sid(({ p }) => p.category === "PAYMENT" && (p as Record<string, Record<string, unknown>>).data?.step === "payment_initiated"),
-    payDismissed: sid(({ p }) => p.category === "PAYMENT" && (p as Record<string, Record<string, unknown>>).data?.step === "payment_dismissed"),
-    paySuccessful: sid(({ p }) => p.category === "PAYMENT" && (p as Record<string, Record<string, unknown>>).data?.step === "payment_successful"),
+    quizCompleted: sid(({ p }) => p.category === "QUIZ" && (p as { data?: { quiz?: { step?: number } } }).data?.quiz?.step === 4),
+    payInitiated: payFinal.filter(v => v === 1).length,
+    payDismissed: payFinal.filter(v => v === 2 || v === 3).length,
+    paySuccessful: payFinal.filter(v => v === 0).length,
   };
 }
 
@@ -234,7 +244,7 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     const date = events[0]?.r.created_on?.slice(0, 10) || "";
     const dateObj = date ? new Date(date) : null;
     const quizDone = answers[4] != null;
-    const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || "";
+    const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || (gp(payEvts[0]?.p, m.paymentCategoryPath) as string) || "";
     const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? (recommendation ? "Quiz Completed" : "No Recommendation") : "");
     const mobile = (gp(uEvt?.p, m.userMobilePath) as string) || "";
     if (internalNums.includes(mobile.trim())) return null;
