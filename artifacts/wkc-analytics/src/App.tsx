@@ -130,27 +130,22 @@ const stepToStatus: Record<string, string> = {
 
 interface TelRow { quizStarted: number; quizCompleted: number; payInitiated: number; payDismissed: number; paySuccessful: number; }
 
-function computeTel(rawRows: Record<string, string>[], date: string): TelRow | null {
+function computeTel(rawRows: Record<string, string>[], sessions: SessionRow[], date: string): TelRow | null {
   const day = rawRows.filter(r => (r.created_on || "").startsWith(date));
-  if (!day.length) return null;
+  const daySessions = sessions.filter(s => s._date === date);
+  if (!day.length && !daySessions.length) return null;
   const parsed = day.map(r => { try { return { sid: r.session_id, p: JSON.parse(r.response || "{}") }; } catch { return { sid: r.session_id, p: {} }; } });
   const sid = (fn: (x: { sid: string; p: Record<string, unknown> }) => boolean) => new Set(parsed.filter(fn).map(x => x.sid)).size;
-  // Determine final payment state per session using same priority as buildSessions
-  const PAY_PRI = ["payment_successful", "payment_initiated", "payment_dismissed", "payment_abandoned"];
-  const sessPayIdx: Record<string, number> = {};
-  parsed.forEach(({ sid: s, p }) => {
-    if ((p as Record<string, unknown>).category !== "PAYMENT") return;
-    const step = ((p as Record<string, Record<string, unknown>>).data?.step as string) || "";
-    const idx = PAY_PRI.indexOf(step); if (idx === -1) return;
-    if (!(s in sessPayIdx) || idx < sessPayIdx[s]) sessPayIdx[s] = idx;
-  });
-  const payFinal = Object.values(sessPayIdx);
+  const statusCount = (st: string | string[]) => {
+    const arr = Array.isArray(st) ? st : [st];
+    return daySessions.filter(s => arr.includes(s["Status for Analytics"])).length;
+  };
   return {
     quizStarted: sid(({ p }) => p.category === "QUIZ"),
     quizCompleted: sid(({ p }) => p.category === "QUIZ" && (p as { data?: { quiz?: { step?: number } } }).data?.quiz?.step === 4),
-    payInitiated: payFinal.filter(v => v === 1).length,
-    payDismissed: payFinal.filter(v => v === 2 || v === 3).length,
-    paySuccessful: payFinal.filter(v => v === 0).length,
+    payInitiated: statusCount("Payment Intiated"),
+    payDismissed: statusCount(["Payment Dismissed", "Payment Abandoned"]),
+    paySuccessful: statusCount("Payment Successful"),
   };
 }
 
@@ -225,10 +220,11 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       if (step != null) answers[step] = { answer: Array.isArray(ans) ? ans.join(", ") : (typeof ans === "string" ? ans : "") };
     });
     const recEvt = events.find(e => e.p.category === m.recCategory);
-    const payEvts = events.filter(e => e.p.category === m.paymentCategory).sort((a, b) =>
-      ["payment_successful", "payment_initiated", "payment_dismissed", "payment_abandoned"].indexOf(gp(a.p, m.paymentStepPath) as string || "") -
-      ["payment_successful", "payment_initiated", "payment_dismissed", "payment_abandoned"].indexOf(gp(b.p, m.paymentStepPath) as string || ""));
-    const payStep = (gp(payEvts[0]?.p, m.paymentStepPath) as string) || "";
+    const evtTime = (e: { r: Record<string, string>; p: Record<string, unknown> }) => e.r.created_on || "";
+    const sortedEvents = [...events].sort((a, b) => evtTime(a).localeCompare(evtTime(b)));
+    const payEvts = sortedEvents.filter(e => e.p.category === m.paymentCategory);
+    const latestPay = payEvts[payEvts.length - 1];
+    const payStep = (gp(latestPay?.p, m.paymentStepPath) as string) || "";
     const payPlan = payEvts.reduce((f, e) => f || (gp(e.p, m.paymentPlanPath) as string) || "", "");
     const secMap = m.sectionIdToColumnMap || {};
     const timeSec: Record<string, number> = {};
@@ -241,10 +237,11 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       const col = secMap[secId] || ("section_" + secId + "_time_seconds");
       timeSec[col] = (timeSec[col] || 0) + secs;
     });
-    const date = events[0]?.r.created_on?.slice(0, 10) || "";
+    const latestEvt = sortedEvents[sortedEvents.length - 1];
+    const date = latestEvt?.r.created_on?.slice(0, 10) || "";
     const dateObj = date ? new Date(date) : null;
     const quizDone = answers[4] != null;
-    const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || (gp(payEvts[0]?.p, m.paymentCategoryPath) as string) || "";
+    const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || (gp(latestPay?.p, m.paymentCategoryPath) as string) || "";
     const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? (recommendation ? "Quiz Completed" : "No Recommendation") : "");
     const mobile = (gp(uEvt?.p, m.userMobilePath) as string) || "";
     if (internalNums.includes(mobile.trim())) return null;
@@ -416,7 +413,6 @@ export default function App() {
     setCsvLoading(true); setMappingNote("");
     const text = await file.text();
     const raw = parseCSV(text, r => !!(r.id || r.session_id));
-    setRows(prev => prev.map(r => { const t = computeTel(raw, r.date); return t ? { ...r, tel: t } : r; }));
     const fp = schemaFP(raw);
     let mapping: MappingState;
     if (mappingState && mappingState.fp === fp) {
@@ -440,7 +436,11 @@ export default function App() {
     }
     const sessions = buildSessions(raw, mapping, internalNums);
     setQuizRows(sessions);
-    setRows(prev => { genRecs(prev, deps, sessions); return prev; });
+    setRows(prev => {
+      const updated = prev.map(r => { const t = computeTel(raw, sessions, r.date); return t ? { ...r, tel: t } : r; });
+      genRecs(updated, deps, sessions);
+      return updated;
+    });
     setCsvLoading(false); e.target.value = "";
   };
 
