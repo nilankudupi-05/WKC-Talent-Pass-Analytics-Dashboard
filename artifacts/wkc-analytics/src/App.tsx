@@ -1,14 +1,35 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const GST = 0.18;
 const MODEL = "claude-sonnet-4-6";
-const DATES = (() => {
-  const d: string[] = [];
-  let c = new Date("2026-04-25");
-  const e = new Date("2026-05-19");
-  for (; c <= e; c.setDate(c.getDate() + 1)) d.push(c.toISOString().slice(0, 10));
-  return d;
-})();
+const SEED_DATE_START = "2026-04-25";
+
+function todayISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function listDates(start: string, end: string): string[] {
+  if (!start || !end || start > end) return [];
+  const out: string[] = [];
+  const c = new Date(start + "T00:00:00");
+  const e = new Date(end + "T00:00:00");
+  for (; c <= e; c.setDate(c.getDate() + 1)) {
+    out.push(`${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, "0")}-${String(c.getDate()).padStart(2, "0")}`);
+  }
+  return out;
+}
+
+function buildDateList(extras: string[] = []): string[] {
+  let start = SEED_DATE_START;
+  let end = todayISO();
+  for (const d of extras) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (d < start) start = d;
+    if (d > end) end = d;
+  }
+  return listDates(start, end);
+}
 
 const SEED_DEPS = [
   { date: "2026-05-03", label: "New landing page" },
@@ -393,7 +414,7 @@ export default function App() {
   const [rows, setRows] = useState<RowItem[]>(() => {
     let saved: Record<string, Record<string, string>> = {};
     try { saved = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {}; } catch {}
-    const allDates = Array.from(new Set([...DATES, ...Object.keys(saved)])).sort();
+    const allDates = Array.from(new Set([...buildDateList(), ...Object.keys(saved)])).sort();
     return allDates.map(date => ({
       date,
       meta: { ...(SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }), ...(saved[date] || {}) },
@@ -429,6 +450,25 @@ export default function App() {
   const qaRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Extend rows when CSV introduces dates outside the current window (or when today rolls over).
+  useEffect(() => {
+    const extras = quizRows.map(s => s._date).filter(Boolean);
+    const needed = buildDateList(extras);
+    setRows(prev => {
+      const have = new Set(prev.map(r => r.date));
+      const missing = needed.filter(d => !have.has(d));
+      if (missing.length === 0) return prev;
+      let saved: Record<string, Record<string, string>> = {};
+      try { saved = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {}; } catch {}
+      const added: RowItem[] = missing.map(date => ({
+        date,
+        meta: { ...(SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }), ...(saved[date] || {}) },
+        tel: null,
+      }));
+      return [...prev, ...added].sort((a, b) => a.date.localeCompare(b.date));
+    });
+  }, [quizRows]);
+
   const handleCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     setCsvLoading(true); setMappingNote("");
@@ -458,7 +498,18 @@ export default function App() {
     const sessions = buildSessions(raw, mapping, internalNums);
     setQuizRows(sessions);
     setRows(prev => {
-      const updated = prev.map(r => { const t = computeTel(raw, sessions, r.date); return t ? { ...r, tel: t } : r; });
+      const needed = buildDateList(sessions.map(s => s._date).filter(Boolean));
+      const have = new Set(prev.map(r => r.date));
+      const missing = needed.filter(d => !have.has(d));
+      let saved: Record<string, Record<string, string>> = {};
+      try { saved = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {}; } catch {}
+      const additions: RowItem[] = missing.map(date => ({
+        date,
+        meta: { ...(SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }), ...(saved[date] || {}) },
+        tel: null,
+      }));
+      const merged = [...prev, ...additions].sort((a, b) => a.date.localeCompare(b.date));
+      const updated = merged.map(r => { const t = computeTel(raw, sessions, r.date); return t ? { ...r, tel: t } : r; });
       genRecs(updated, deps, sessions);
       return updated;
     });
@@ -534,6 +585,33 @@ export default function App() {
   const hasData = (r: RowItem) => Object.values(r.meta).some(v => v !== "") || !!r.tel;
   const depForDate = (d: string) => deps.filter(x => x.date === d);
   const pctColor = (v: string) => { if (!v || v === "0.00%") return "#ccc"; const n = parseFloat(v); return n >= 50 ? "#059669" : n >= 20 ? "#0369a1" : n >= 5 ? "#1a1a1a" : "#6b6560"; };
+
+  const computePctRow = (row: RowItem): Record<string, string> => {
+    const seed = SEED_PCT[row.date] || {};
+    const lc = +row.meta.linkClicks || 0, lpv = +row.meta.lpv || 0;
+    const t = row.tel;
+    const fmt = (num: number, den: number) => den > 0 ? (num / den * 100).toFixed(2) + "%" : "";
+    if (!t) {
+      // No telemetry yet for this date — fall back to seeded percentages.
+      return seed;
+    }
+    const qs = t.quizStarted, qc = t.quizCompleted;
+    const pInit = t.payInitiated, pDis = t.payDismissed, pOk = t.paySuccessful;
+    const payAny = pInit + pDis + pOk;
+    return {
+      qLink: fmt(qs, lc),
+      qLPV: fmt(qs, lpv),
+      qDone: fmt(qc, qs),
+      payI: fmt(payAny, qc),
+      payD: fmt(pDis, payAny),
+      eF: seed.eF || "",     // not derivable from current telemetry
+      eP: seed.eP || "",     // not derivable from current telemetry
+      pClk: fmt(pOk, lc),
+      pLPV: fmt(pOk, lpv),
+      pQS: fmt(pOk, qs),
+      pQC: fmt(pOk, qc),
+    };
+  };
 
   const sortedQ = qSort.key ? [...quizRows].sort((a, b) => {
     const av = qSort.key === "_date" ? (a._date || a.Datevalue || "") : (a[qSort.key!] || "");
@@ -766,7 +844,7 @@ export default function App() {
                         {comments[row.date] ? <span style={{ color: "#6b6560", lineHeight: 1.5, fontSize: 10 }}>{comments[row.date]}</span> : commLoad ? <Spin /> : hasData(row) ? <span style={{ color: "#ccc", fontSize: 10, cursor: "pointer" }} onClick={async () => { const ctx = buildCtx(rows, deps, quizRows, dateRange); const c = await callClaude(ctx, "For " + row.date + " only: one sentence about performance. Note any deployment."); setComments(p => ({ ...p, [row.date]: c })); }}>generate</span> : null}
                       </td>
                     </>}
-                    {mode === "%" && PCT_COLS.map(c => { const pct = SEED_PCT[row.date] || {}; const v = pct[c.key] || ""; return <td key={c.key} style={TD("right", c.hi ? "#fffbf5" : "#faf9f7")}><span style={{ fontFamily: "monospace", color: pctColor(v), fontWeight: c.hi && v && v !== "0.00%" ? 500 : 400 }}>{v || "—"}</span></td>; })}
+                    {mode === "%" && (() => { const pct = computePctRow(row); return PCT_COLS.map(c => { const v = pct[c.key] || ""; return <td key={c.key} style={TD("right", c.hi ? "#fffbf5" : "#faf9f7")}><span style={{ fontFamily: "monospace", color: pctColor(v), fontWeight: c.hi && v && v !== "0.00%" ? 500 : 400 }}>{v || "—"}</span></td>; }); })()}
                   </tr>
                 );
               })}
