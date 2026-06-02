@@ -51,3 +51,4 @@ Thumbs.db
 # Local dev config (may contain API keys — never commit)
 .claude/launch.json
 Talent Pass Analytics Dashboard/.claude/launch.json
+Talent Pass Analytics Dashboard/zipFile.zip
