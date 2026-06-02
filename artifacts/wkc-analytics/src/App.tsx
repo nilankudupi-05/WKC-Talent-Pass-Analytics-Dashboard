@@ -421,7 +421,12 @@ export default function App() {
       tel: null,
     }));
   });
-  const [deps, setDeps] = useState<DepItem[]>(SEED_DEPS);
+  const [deps, setDeps] = useState<DepItem[]>(() => {
+    let saved: DepItem[] = [];
+    try { saved = JSON.parse(localStorage.getItem("wkc_deps") || "null") || []; } catch {}
+    const merged = [...SEED_DEPS, ...saved.filter(s => !SEED_DEPS.find(d => d.date === s.date && d.label === s.label))];
+    return merged.sort((a, b) => a.date.localeCompare(b.date));
+  });
   const [mode, setMode] = useState("raw");
   const [editCell, setEditCell] = useState<{ date: string; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
@@ -779,7 +784,7 @@ export default function App() {
         {depForm.show && <div className="fu" style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "10px 14px", marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input value={depForm.date} onChange={e => setDepForm(f => ({ ...f, date: e.target.value }))} placeholder="2026-05-20" style={{ ...INP, width: 110, fontFamily: "monospace" }} />
           <input value={depForm.label} onChange={e => setDepForm(f => ({ ...f, label: e.target.value }))} placeholder="What changed?" style={{ ...INP, width: 200 }} />
-          <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { setDeps(d => [...d, { date: depForm.date, label: depForm.label }]); setRows(prev => { if (prev.find(r => r.date === depForm.date)) return prev; const next = [...prev, { date: depForm.date, meta: { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }, tel: null }]; return next.sort((a, b) => a.date.localeCompare(b.date)); }); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
+          <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { const next = [...deps, { date: depForm.date, label: depForm.label }]; setDeps(next); try { localStorage.setItem("wkc_deps", JSON.stringify(next.filter(d => !SEED_DEPS.find(s => s.date === d.date && s.label === d.label)))); } catch {} setRows(prev => { if (prev.find(r => r.date === depForm.date)) return prev; return [...prev, { date: depForm.date, meta: { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }, tel: null }].sort((a, b) => a.date.localeCompare(b.date)); }); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
           <button style={BTN()} onClick={() => setDepForm(f => ({ ...f, show: false }))}>Cancel</button>
         </div>}
 
