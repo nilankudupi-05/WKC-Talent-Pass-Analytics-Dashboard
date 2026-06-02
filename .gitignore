@@ -47,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local dev config (may contain API keys — never commit)
+.claude/launch.json
+Talent Pass Analytics Dashboard/.claude/launch.json
