@@ -2,6 +2,9 @@ import { useState, useRef, useEffect } from "react";
 import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 
 const GST = 0.18;
+// Base URL for the AI proxy. Empty in local dev (Vite proxies /api -> localhost:3001).
+// On GitHub Pages, set VITE_API_BASE at build time to the Cloudflare Worker origin.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 const MODEL = "claude-sonnet-4-6";
 const SEED_DATE_START = "2026-04-25";
 
@@ -207,7 +210,7 @@ async function fetchAIMapping(rawRows: Record<string, string>[]): Promise<Mappin
   const sample = JSON.stringify(sampleByCategory(rawRows), null, 2).slice(0, 10000);
   const presentCategories = [...new Set(rawRows.slice(0, 500).map(r => { try { return JSON.parse(r.response || "{}").category as string; } catch { return ""; } }).filter(Boolean))];
   const prompt = "Map these quiz funnel telemetry events to field paths. Return ONLY JSON (no markdown) with keys: quizCategory,quizStepPath,quizAnswerPath,quizQuestionIdPath,recCategory,recNamePath,paymentCategory,paymentStepPath,paymentPlanPath,paymentCategoryPath,userNamePath,userMobilePath,userAgeGroupPath,utmPath,telemetryCategory,timeSpentTypePath,timeSpentTypeValue,timeSpentSectionPath,timeSpentSecondsPath,sectionIdToColumnMap,changes.\n\nCategory string values MUST be chosen from this list (exact match, no inventing): " + JSON.stringify(presentCategories) + ". Never return null for a category field — pick the closest match from the list.\n\nEvents:\n" + sample;
-  const res = await fetch("/api/ai/complete", {
+  const res = await fetch(`${API_BASE}/api/ai/complete`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages: [{ role: "user", content: prompt }], maxTokens: 2000 }),
   });
@@ -328,7 +331,7 @@ function buildCtx(
 
 async function callClaude(system: string, user: string, maxTokens = 1000): Promise<string> {
   try {
-    const r = await fetch("/api/ai/complete", {
+    const r = await fetch(`${API_BASE}/api/ai/complete`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ system, messages: [{ role: "user", content: user }], maxTokens }),
     });
