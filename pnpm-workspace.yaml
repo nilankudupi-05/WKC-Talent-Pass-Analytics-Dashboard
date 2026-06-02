@@ -70,9 +70,16 @@ autoInstallPeers: false
 
 onlyBuiltDependencies:
   - '@swc/core'
-  - esbuild
   - msw
   - unrs-resolver
+
+# esbuild is pinned by the drizzle-kit security override below (esbuild: 0.27.3).
+# That version override makes the onlyBuiltDependencies name-match miss, so a fresh
+# CI install reports esbuild's build script as un-approved and fails with
+# ERR_PNPM_IGNORED_BUILDS. Explicitly ignore it: esbuild does not need its postinstall
+# on a supported platform — it resolves its binary from the @esbuild/<platform> package.
+ignoredBuiltDependencies:
+  - esbuild
 
 overrides:
   # replit uses linux-x64 only, we can exclude all other platforms
