@@ -1,0 +1,13 @@
+{
+  "name": "wkc-ai-proxy-worker",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cloudflare Worker AI proxy for the WKC Talent Pass dashboard (GitHub Pages).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
