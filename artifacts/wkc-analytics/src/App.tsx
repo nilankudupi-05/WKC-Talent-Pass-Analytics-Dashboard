@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 
 const GST = 0.18;
 const MODEL = "claude-sonnet-4-6";
@@ -339,11 +340,56 @@ async function callClaude(system: string, user: string, maxTokens = 1000): Promi
   }
 }
 
-function renderMd(text: string) {
-  if (!text) return null;
+function median(vals: number[]): number | null {
+  if (!vals.length) return null;
+  const s = [...vals].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 !== 0 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function inlineMd(text: string): React.ReactNode {
   return text.split(/(\*\*[^*]+\*\*)/).map((p, i) =>
     p.startsWith("**") && p.endsWith("**") ? <strong key={i}>{p.slice(2, -2)}</strong> : <span key={i}>{p}</span>
   );
+}
+
+function renderMd(text: string): React.ReactNode {
+  if (!text) return null;
+  const blocks = text.split(/\n\n+/);
+  return blocks.map((block, bi) => {
+    const raw = block.split("\n");
+    // Heading
+    if (/^#{1,3}\s/.test(raw[0])) {
+      const level = (raw[0].match(/^(#+)/)?.[1] || "").length;
+      const content = raw[0].replace(/^#+\s/, "");
+      const sz = level === 1 ? 14 : level === 2 ? 13 : 12;
+      return <div key={bi} style={{ fontSize: sz, fontWeight: 700, marginBottom: 4, marginTop: bi > 0 ? 8 : 0 }}>{inlineMd(content)}</div>;
+    }
+    // Table
+    if (raw.some(l => l.includes("|"))) {
+      const tRows = raw.filter(l => l.includes("|")).map(l => l.split("|").map(c => c.trim()).filter(c => c !== ""));
+      const header = tRows[0] || [];
+      const dataRows = tRows.filter((_, i) => i > 0 && !tRows[i].every(c => /^[-:]+$/.test(c)));
+      return (
+        <table key={bi} style={{ borderCollapse: "collapse", width: "100%", margin: "6px 0", fontSize: 11 }}>
+          <thead><tr>{header.map((h, i) => <th key={i} style={{ padding: "4px 8px", borderBottom: "2px solid #e8e3dc", textAlign: "left", fontWeight: 600, background: "#f5f2ee", fontSize: 10 }}>{inlineMd(h)}</th>)}</tr></thead>
+          <tbody>{dataRows.map((row, ri) => <tr key={ri}>{row.map((c, ci) => <td key={ci} style={{ padding: "4px 8px", borderBottom: "1px solid #f0ece6" }}>{inlineMd(c)}</td>)}</tr>)}</tbody>
+        </table>
+      );
+    }
+    // Bullet list
+    const bulletLines = raw.filter(l => /^[-*]\s/.test(l.trim()));
+    if (bulletLines.length > 0 && bulletLines.length >= Math.ceil(raw.length / 2)) {
+      return <ul key={bi} style={{ margin: "4px 0", paddingLeft: 18 }}>{raw.filter(l => /^[-*]\s/.test(l.trim())).map((l, i) => <li key={i} style={{ marginBottom: 2 }}>{inlineMd(l.replace(/^[-*]\s/, ""))}</li>)}</ul>;
+    }
+    // Numbered list
+    const numLines = raw.filter(l => /^\d+\.\s/.test(l.trim()));
+    if (numLines.length > 0 && numLines.length >= Math.ceil(raw.length / 2)) {
+      return <ol key={bi} style={{ margin: "4px 0", paddingLeft: 18 }}>{raw.filter(l => /^\d+\.\s/.test(l.trim())).map((l, i) => <li key={i} style={{ marginBottom: 2 }}>{inlineMd(l.replace(/^\d+\.\s/, ""))}</li>)}</ol>;
+    }
+    // Paragraph
+    return <p key={bi} style={{ margin: "0 0 6px 0", lineHeight: 1.65 }}>{inlineMd(block)}</p>;
+  });
 }
 
 const TH = (a: string = "right", bg: string = "#f5f2ee"): React.CSSProperties => ({ padding: "7px 8px", fontSize: 10, fontWeight: 600, color: "#9b9590", letterSpacing: "0.05em", textTransform: "uppercase", borderBottom: "1px solid #e8e3dc", background: bg, textAlign: a as CanvasTextAlign, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none" });
@@ -421,12 +467,7 @@ export default function App() {
       tel: null,
     }));
   });
-  const [deps, setDeps] = useState<DepItem[]>(() => {
-    let saved: DepItem[] = [];
-    try { saved = JSON.parse(localStorage.getItem("wkc_deps") || "null") || []; } catch {}
-    const merged = [...SEED_DEPS, ...saved.filter(s => !SEED_DEPS.find(d => d.date === s.date && d.label === s.label))];
-    return merged.sort((a, b) => a.date.localeCompare(b.date));
-  });
+  const [deps, setDeps] = useState<DepItem[]>(SEED_DEPS);
   const [mode, setMode] = useState("raw");
   const [editCell, setEditCell] = useState<{ date: string; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
@@ -446,11 +487,13 @@ export default function App() {
   const [quizRows, setQuizRows] = useState<SessionRow[]>([]);
   const [qFilter, setQFilter] = useState({ date: "all", rec: "all", status: "all" });
   const [qSearch, setQSearch] = useState("");
-  const [qSort, setQSort] = useState<{ key: string | null; dir: number }>({ key: null, dir: 1 });
+  const [qSort, setQSort] = useState<{ key: string | null; dir: number }>({ key: "_date", dir: -1 });
   const [internalNums, setInternalNums] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("wkc_internal") || "null") || []; } catch { return []; } });
   const [showIntMgr, setShowIntMgr] = useState(false);
   const [newIntNum, setNewIntNum] = useState("");
   const [dateRange, setDateRange] = useState({ from: "", to: "" });
+  const [graphMetric, setGraphMetric] = useState("impressions");
+  const [graphMetric2, setGraphMetric2] = useState("none");
   const [cmVisibleCols, setCmVisibleCols] = useState<Set<string>>(new Set(["rec", "payInit", "payAbn", "payOK"]));
   const qaRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -647,12 +690,10 @@ export default function App() {
   // KPI bar computations
   const kpiRows = rows.filter(r => inRange(r.date, dateRange) && hasData(r));
   const kpiSpend = kpiRows.reduce((s, r) => s + (+r.meta.adSpend || 0), 0);
-  const kpiCPCVals = kpiRows.map(r => calcDerived(r.meta).cpc).filter((v): v is number => v != null);
-  const kpiCTRVals = kpiRows.map(r => calcDerived(r.meta).ctr).filter((v): v is number => v != null);
-  const kpiAvgCPC = kpiCPCVals.length ? kpiCPCVals.reduce((a, b) => a + b, 0) / kpiCPCVals.length : null;
-  const kpiAvgCTR = kpiCTRVals.length ? kpiCTRVals.reduce((a, b) => a + b, 0) / kpiCTRVals.length : null;
-  const kpiSessions = kpiRows.reduce((s, r) => s + (r.tel?.quizStarted || 0), 0);
-  const kpiPayments = kpiRows.reduce((s, r) => s + (r.tel?.paySuccessful || 0), 0);
+  const kpiNumVals = (key: string) => kpiRows.map(r => +(r.meta as Record<string,string>)[key] || 0).filter(v => v > 0);
+  const kpiTelVals = (key: keyof TelRow) => kpiRows.map(r => r.tel?.[key] ?? 0).filter(v => v > 0);
+  const avg = (vals: number[]) => vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  const fmtN = (v: number | null, dec = 0) => v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: dec });
 
   // Rolling 7-day avg for CPC/CTR cell colour coding
   const allDataRows = rows.filter(r => hasData(r));
@@ -757,7 +798,7 @@ export default function App() {
 
       {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "1px solid #e8e3dc", padding: "0 20px", background: "#faf9f7" }}>
-        {([["table", "Data Table"], ["sessions", quizRows.length ? `Quiz Sessions (${quizRows.length})` : "Quiz Sessions"], ["recs", "Recommendations"], ["qa", "Ask AI"], ["matrix", "Category Matrix"]] as [string, string][]).map(([k, l]) => (
+        {([["table", "Data Table"], ["sessions", quizRows.length ? `Quiz Sessions (${quizRows.length})` : "Quiz Sessions"], ["recs", "Recommendations"], ["qa", "Ask AI"], ["matrix", "Category Matrix"], ["graphs", "Graphs"]] as [string, string][]).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{ background: "none", border: "none", padding: "12px 0", marginRight: 24, fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", color: tab === k ? "#1a1a1a" : "#9b9590", borderBottom: tab === k ? "2px solid #1a1a1a" : "2px solid transparent", transition: "all .15s" }}>{l}</button>
         ))}
       </div>
@@ -784,25 +825,58 @@ export default function App() {
         {depForm.show && <div className="fu" style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "10px 14px", marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input value={depForm.date} onChange={e => setDepForm(f => ({ ...f, date: e.target.value }))} placeholder="2026-05-20" style={{ ...INP, width: 110, fontFamily: "monospace" }} />
           <input value={depForm.label} onChange={e => setDepForm(f => ({ ...f, label: e.target.value }))} placeholder="What changed?" style={{ ...INP, width: 200 }} />
-          <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { const next = [...deps, { date: depForm.date, label: depForm.label }]; setDeps(next); try { localStorage.setItem("wkc_deps", JSON.stringify(next.filter(d => !SEED_DEPS.find(s => s.date === d.date && s.label === d.label)))); } catch {} setRows(prev => { if (prev.find(r => r.date === depForm.date)) return prev; return [...prev, { date: depForm.date, meta: { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }, tel: null }].sort((a, b) => a.date.localeCompare(b.date)); }); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
+          <button style={BTN("primary")} onClick={() => { if (depForm.date && depForm.label) { setDeps(d => [...d, { date: depForm.date, label: depForm.label }]); setRows(prev => { if (prev.find(r => r.date === depForm.date)) return prev; const next = [...prev, { date: depForm.date, meta: { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }, tel: null }]; return next.sort((a, b) => a.date.localeCompare(b.date)); }); setDepForm({ show: false, date: "", label: "" }); } }}>Add</button>
           <button style={BTN()} onClick={() => setDepForm(f => ({ ...f, show: false }))}>Cancel</button>
         </div>}
 
-        {kpiRows.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
-          {[
-            { label: "Total Spend", value: "₹" + kpiSpend.toLocaleString("en-IN", { maximumFractionDigits: 0 }), sub: "excl. GST · " + kpiRows.length + " days" },
-            { label: "Avg CPC", value: kpiAvgCPC != null ? "₹" + kpiAvgCPC.toFixed(2) : "—", sub: "cost per click" },
-            { label: "Avg CTR", value: kpiAvgCTR != null ? kpiAvgCTR.toFixed(2) + "%" : "—", sub: "click-through rate" },
-            { label: "Quiz Sessions", value: kpiSessions > 0 ? kpiSessions.toLocaleString() : "—", sub: "from telemetry CSV" },
-            { label: "Payments", value: kpiPayments > 0 ? kpiPayments.toLocaleString() : "—", sub: kpiSessions > 0 && kpiPayments > 0 ? (kpiPayments / kpiSessions * 100).toFixed(1) + "% of sessions" : "from telemetry CSV" },
-          ].map(k => (
-            <div key={k.label} style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "10px 14px" }}>
-              <div style={{ fontSize: 9, fontWeight: 600, color: "#9b9590", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k.label}</div>
-              <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.03em", color: "#1a1a1a" }}>{k.value}</div>
-              <div style={{ fontSize: 9, color: "#9b9590", marginTop: 2 }}>{k.sub}</div>
+        {kpiRows.length > 0 && (() => {
+          const fmtPct = (v: number | null) => v == null ? "—" : (v * 100).toFixed(1) + "%";
+          if (mode === "%") {
+            const pctChipDefs = [
+              { label: "Quiz/Link%", tip: "Quiz Started ÷ Link Clicks", vals: kpiRows.map(r => +r.meta.linkClicks > 0 && r.tel ? r.tel.quizStarted / +r.meta.linkClicks : null) },
+              { label: "Quiz/LPV%", tip: "Quiz Started ÷ LPV", vals: kpiRows.map(r => +r.meta.lpv > 0 && r.tel ? r.tel.quizStarted / +r.meta.lpv : null) },
+              { label: "Quiz Done%", tip: "Quiz Completed ÷ Quiz Started", vals: kpiRows.map(r => r.tel && r.tel.quizStarted > 0 ? r.tel.quizCompleted / r.tel.quizStarted : null) },
+              { label: "Pay Init%", tip: "Pay Initiated ÷ Quiz Completed", vals: kpiRows.map(r => r.tel && r.tel.quizCompleted > 0 ? r.tel.payInitiated / r.tel.quizCompleted : null) },
+              { label: "Pay OK%", tip: "Pay Successful ÷ Pay Initiated", vals: kpiRows.map(r => r.tel && r.tel.payInitiated > 0 ? r.tel.paySuccessful / r.tel.payInitiated : null) },
+            ].map(c => ({ ...c, vals: c.vals.filter((v): v is number => v !== null) }));
+            return (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
+                {pctChipDefs.map(k => (
+                  <div key={k.label} style={{ background: "#fffbf0", border: "1px solid #f59e0b40", borderRadius: 8, padding: "10px 14px" }} title={k.tip}>
+                    <div style={{ fontSize: 9, fontWeight: 600, color: "#9b9590", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k.label}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.03em", color: "#1a1a1a" }}>{fmtPct(avg(k.vals))}</div>
+                    <div style={{ fontSize: 9, color: "#9b9590", marginTop: 2 }}>Median: {fmtPct(median(k.vals))}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+          const imp = kpiNumVals("impressions"), rea = kpiNumVals("reach"), lc = kpiNumVals("linkClicks"), lpv = kpiNumVals("lpv");
+          const qs = kpiTelVals("quizStarted"), qc = kpiTelVals("quizCompleted"), pi = kpiTelVals("payInitiated"), pd = kpiTelVals("payDismissed"), po = kpiTelVals("paySuccessful");
+          const chips = [
+            { label: "Total Spend", primary: "₹" + fmtN(kpiSpend), secondary: "incl. GST: ₹" + fmtN(kpiSpend * (1 + GST)) },
+            { label: "Impressions", primary: fmtN(avg(imp)), secondary: "Median: " + fmtN(median(imp)) },
+            { label: "Reach", primary: fmtN(avg(rea)), secondary: "Median: " + fmtN(median(rea)) },
+            { label: "Link Clicks", primary: fmtN(avg(lc)), secondary: "Median: " + fmtN(median(lc)) },
+            { label: "LPV", primary: fmtN(avg(lpv)), secondary: "Median: " + fmtN(median(lpv)) },
+            { label: "Quiz Started", primary: fmtN(avg(qs)), secondary: "Median: " + fmtN(median(qs)) },
+            { label: "Quiz Completed", primary: fmtN(avg(qc)), secondary: "Median: " + fmtN(median(qc)) },
+            { label: "Pay Init", primary: fmtN(avg(pi)), secondary: "Median: " + fmtN(median(pi)) },
+            { label: "Pay Dismissed", primary: fmtN(avg(pd)), secondary: "Median: " + fmtN(median(pd)) },
+            { label: "Pay OK", primary: fmtN(avg(po)), secondary: "Median: " + fmtN(median(po)) },
+          ];
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
+              {chips.map(k => (
+                <div key={k.label} style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "10px 14px" }}>
+                  <div style={{ fontSize: 9, fontWeight: 600, color: "#9b9590", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k.label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.03em", color: "#1a1a1a" }}>{k.primary}</div>
+                  <div style={{ fontSize: 9, color: "#9b9590", marginTop: 2 }}>{k.secondary}</div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>}
+          );
+        })()}
 
         <div style={{ overflowX: "auto", border: "1px solid #e8e3dc", borderRadius: 8, background: "#fff", maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -860,6 +934,7 @@ export default function App() {
 
       {/* QUIZ SESSIONS */}
       {tab === "sessions" && <div style={{ padding: 20 }}>
+        {deps.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 0", marginBottom: 8, borderBottom: "1px solid #e8e3dc" }}>{deps.map((d, i) => <span key={i} style={DPILL}>&#9873; {d.date.slice(5)} · {d.label}</span>)}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 8, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Quiz Sessions</div>
@@ -898,7 +973,7 @@ export default function App() {
             {SESSION_COLS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
           {qSort.key && <button style={BTN()} onClick={() => setQSort(s => ({ ...s, dir: s.dir * -1 }))}>{qSort.dir === 1 ? "↑ Asc" : "↓ Desc"}</button>}
-          {(qFilter.date !== "all" || qFilter.rec !== "all" || qFilter.status !== "all" || qSearch || qSort.key) && <button style={BTN()} onClick={() => { setQFilter({ date: "all", rec: "all", status: "all" }); setQSearch(""); setQSort({ key: null, dir: 1 }); }}>Clear all</button>}
+          {(qFilter.date !== "all" || qFilter.rec !== "all" || qFilter.status !== "all" || qSearch || qSort.key !== "_date" || qSort.dir !== -1) && <button style={BTN()} onClick={() => { setQFilter({ date: "all", rec: "all", status: "all" }); setQSearch(""); setQSort({ key: "_date", dir: -1 }); }}>Clear all</button>}
         </div>}
 
         {quizRows.length > 0 && funnelSteps && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
@@ -983,6 +1058,7 @@ export default function App() {
 
       {/* RECOMMENDATIONS */}
       {tab === "recs" && <div style={{ padding: 20 }}>
+        {deps.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 0", marginBottom: 8, borderBottom: "1px solid #e8e3dc" }}>{deps.map((d, i) => <span key={i} style={DPILL}>&#9873; {d.date.slice(5)} · {d.label}</span>)}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div><div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>AI Recommendations</div><div style={{ fontSize: 11, color: "#9b9590" }}>Generated from your funnel data</div></div>
           <button style={BTN("primary")} onClick={() => genRecs(rows, deps)} disabled={recLoad}>{recLoad ? <><Spin /> &nbsp;Analyzing...</> : "✦ Generate"}</button>
@@ -1009,6 +1085,7 @@ export default function App() {
 
       {/* CATEGORY MATRIX */}
       {tab === "matrix" && <div style={{ padding: 20 }}>
+        {deps.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 0", marginBottom: 8, borderBottom: "1px solid #e8e3dc" }}>{deps.map((d, i) => <span key={i} style={DPILL}>&#9873; {d.date.slice(5)} · {d.label}</span>)}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Category Matrix</div>
@@ -1101,6 +1178,7 @@ export default function App() {
 
       {/* ASK AI */}
       {tab === "qa" && <div style={{ padding: 20, display: "flex", flexDirection: "column", height: "calc(100vh - 110px)" }}>
+        {deps.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 0", marginBottom: 8, borderBottom: "1px solid #e8e3dc" }}>{deps.map((d, i) => <span key={i} style={DPILL}>&#9873; {d.date.slice(5)} · {d.label}</span>)}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Ask AI</div>
@@ -1137,6 +1215,145 @@ export default function App() {
           <button style={BTN("primary")} onClick={() => sendQA()} disabled={qaLoad || !qaInput.trim()}>{qaLoad ? <Spin /> : "Send"}</button>
         </div>
       </div>}
+      {/* GRAPHS */}
+      {tab === "graphs" && <div style={{ padding: 20 }}>
+        {deps.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 0", marginBottom: 8, borderBottom: "1px solid #e8e3dc" }}>{deps.map((d, i) => <span key={i} style={DPILL}>&#9873; {d.date.slice(5)} · {d.label}</span>)}</div>}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 8, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Trend Graph</div>
+            <div style={{ fontSize: 11, color: "#9b9590" }}>Daily values · deployment markers shown as dashed lines · avg/median trendlines included</div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: "#1a1a1a", fontWeight: 500, minWidth: 60, textAlign: "right" }}>Primary</span>
+              <select value={graphMetric} onChange={e => setGraphMetric(e.target.value)} style={{ ...INP, cursor: "pointer", minWidth: 180 }}>
+                <optgroup label="Meta">
+                  <option value="adSpend">Ad Spend (excl. GST)</option>
+                  <option value="impressions">Impressions</option>
+                  <option value="reach">Reach</option>
+                  <option value="linkClicks">Link Clicks</option>
+                  <option value="lpv">LPV</option>
+                </optgroup>
+                <optgroup label="Derived">
+                  <option value="cpc">CPC (Cost/Click)</option>
+                  <option value="cpl">CPL (Cost/Lead)</option>
+                  <option value="ctr">CTR (%)</option>
+                  <option value="freq">Frequency</option>
+                </optgroup>
+                <optgroup label="Telemetry">
+                  <option value="quizStarted">Quiz Started</option>
+                  <option value="quizCompleted">Quiz Completed</option>
+                  <option value="payInitiated">Pay Init</option>
+                  <option value="payDismissed">Pay Dismissed</option>
+                  <option value="paySuccessful">Pay OK</option>
+                </optgroup>
+              </select>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: "#7c3aed", fontWeight: 500, minWidth: 60, textAlign: "right" }}>Compare</span>
+              <select value={graphMetric2} onChange={e => setGraphMetric2(e.target.value)} style={{ ...INP, cursor: "pointer", minWidth: 180, borderColor: graphMetric2 !== "none" ? "#7c3aed" : undefined }}>
+                <option value="none">— None —</option>
+                <optgroup label="Meta">
+                  <option value="adSpend">Ad Spend (excl. GST)</option>
+                  <option value="impressions">Impressions</option>
+                  <option value="reach">Reach</option>
+                  <option value="linkClicks">Link Clicks</option>
+                  <option value="lpv">LPV</option>
+                </optgroup>
+                <optgroup label="Derived">
+                  <option value="cpc">CPC (Cost/Click)</option>
+                  <option value="cpl">CPL (Cost/Lead)</option>
+                  <option value="ctr">CTR (%)</option>
+                  <option value="freq">Frequency</option>
+                </optgroup>
+                <optgroup label="Telemetry">
+                  <option value="quizStarted">Quiz Started</option>
+                  <option value="quizCompleted">Quiz Completed</option>
+                  <option value="payInitiated">Pay Init</option>
+                  <option value="payDismissed">Pay Dismissed</option>
+                  <option value="paySuccessful">Pay OK</option>
+                </optgroup>
+              </select>
+            </div>
+          </div>
+        </div>
+        {(() => {
+          const GRAPH_META: Record<string, { label: string; prefix?: string; suffix?: string; dec?: number }> = {
+            adSpend: { label: "Ad Spend", prefix: "₹", dec: 0 }, impressions: { label: "Impressions", dec: 0 },
+            reach: { label: "Reach", dec: 0 }, linkClicks: { label: "Link Clicks", dec: 0 }, lpv: { label: "LPV", dec: 0 },
+            cpc: { label: "CPC", prefix: "₹", dec: 2 }, cpl: { label: "CPL", prefix: "₹", dec: 2 },
+            ctr: { label: "CTR", suffix: "%", dec: 2 }, freq: { label: "Frequency", dec: 2 },
+            quizStarted: { label: "Quiz Started", dec: 0 }, quizCompleted: { label: "Quiz Done", dec: 0 },
+            payInitiated: { label: "Pay Init", dec: 0 }, payDismissed: { label: "Pay Dismissed", dec: 0 }, paySuccessful: { label: "Pay OK", dec: 0 },
+          };
+          const getVal = (r: RowItem, m: string): number | null => {
+            const dv = calcDerived(r.meta);
+            if (m === "adSpend") return +r.meta.adSpend || null;
+            if (m === "impressions") return +r.meta.impressions || null;
+            if (m === "reach") return +r.meta.reach || null;
+            if (m === "linkClicks") return +r.meta.linkClicks || null;
+            if (m === "lpv") return +r.meta.lpv || null;
+            if (m === "cpc") return dv.cpc;
+            if (m === "cpl") return dv.cpl;
+            if (m === "ctr") return dv.ctr;
+            if (m === "freq") return dv.freq;
+            if (m === "quizStarted") return r.tel?.quizStarted ?? null;
+            if (m === "quizCompleted") return r.tel?.quizCompleted ?? null;
+            if (m === "payInitiated") return r.tel?.payInitiated ?? null;
+            if (m === "payDismissed") return r.tel?.payDismissed ?? null;
+            if (m === "paySuccessful") return r.tel?.paySuccessful ?? null;
+            return null;
+          };
+          const meta = GRAPH_META[graphMetric] || { label: graphMetric };
+          const meta2 = graphMetric2 !== "none" ? (GRAPH_META[graphMetric2] || { label: graphMetric2 }) : null;
+          const graphData = rows.filter(r => inRange(r.date, dateRange) && hasData(r)).map(r => ({
+            date: r.date.slice(5), fullDate: r.date,
+            value: getVal(r, graphMetric),
+            value2: graphMetric2 !== "none" ? getVal(r, graphMetric2) : null,
+          }));
+          const gVals = graphData.map(d => d.value).filter((v): v is number => v !== null);
+          const gMean = gVals.length ? gVals.reduce((a, b) => a + b, 0) / gVals.length : null;
+          const gMedian = median(gVals);
+          const depDates = new Set(deps.map(d => d.date.slice(5)));
+          const hasSecond = graphMetric2 !== "none";
+          return (
+            <div style={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 8, padding: "16px 8px 8px 8px" }}>
+              {(gMean !== null || gMedian !== null) && (
+                <div style={{ display: "flex", gap: 16, paddingLeft: 16, marginBottom: 8, fontSize: 10 }}>
+                  {gMean !== null && <span style={{ color: "#2563eb", fontWeight: 600 }}>— Avg: {(meta.prefix || "") + fmtN(gMean, meta.dec ?? 0) + (meta.suffix || "")}</span>}
+                  {gMedian !== null && <span style={{ color: "#7c3aed", fontWeight: 600 }}>— Median: {(meta.prefix || "") + fmtN(gMedian, meta.dec ?? 0) + (meta.suffix || "")}</span>}
+                  {hasSecond && <span style={{ color: "#059669", fontWeight: 600 }}>— {meta2?.label} (right axis)</span>}
+                </div>
+              )}
+              <ResponsiveContainer width="100%" height={380}>
+                <ComposedChart data={graphData} margin={{ top: 24, right: hasSecond ? 70 : 24, left: 8, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0ece6" />
+                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#9b9590" }} tickLine={false} axisLine={{ stroke: "#e8e3dc" }} />
+                  <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "#9b9590" }} tickLine={false} axisLine={false} tickFormatter={v => (meta.prefix || "") + (typeof v === "number" ? v.toLocaleString("en-IN", { maximumFractionDigits: meta.dec ?? 0 }) : v) + (meta.suffix || "")} width={60} />
+                  {hasSecond && <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "#7c3aed" }} tickLine={false} axisLine={false} tickFormatter={v => (meta2?.prefix || "") + (typeof v === "number" ? v.toLocaleString("en-IN", { maximumFractionDigits: meta2?.dec ?? 0 }) : v) + (meta2?.suffix || "")} width={60} />}
+                  <Tooltip
+                    contentStyle={{ background: "#fff", border: "1px solid #e8e3dc", borderRadius: 6, fontSize: 11 }}
+                    formatter={(value: number, name: string) => {
+                      if (name === "value2" && meta2) return [(meta2.prefix || "") + value.toLocaleString("en-IN", { maximumFractionDigits: meta2.dec ?? 0 }) + (meta2.suffix || ""), meta2.label];
+                      return [(meta.prefix || "") + value.toLocaleString("en-IN", { maximumFractionDigits: meta.dec ?? 0 }) + (meta.suffix || ""), meta.label];
+                    }}
+                    labelFormatter={label => { const dep = deps.find(d => d.date.slice(5) === label); return label + (dep ? " · " + dep.label : ""); }}
+                  />
+                  {deps.filter(d => depDates.has(d.date.slice(5))).map(d => (
+                    <ReferenceLine key={d.date} yAxisId="left" x={d.date.slice(5)} stroke="#b45309" strokeDasharray="4 2"
+                      label={{ value: d.label, position: "insideTopRight", fontSize: 9, fill: "#b45309", offset: 4 }} />
+                  ))}
+                  {gMean !== null && <ReferenceLine yAxisId="left" y={gMean} stroke="#2563eb" strokeDasharray="6 3" label={{ value: "Avg", position: "insideTopLeft", fontSize: 9, fill: "#2563eb" }} />}
+                  {gMedian !== null && <ReferenceLine yAxisId="left" y={gMedian} stroke="#7c3aed" strokeDasharray="6 3" label={{ value: "Mdn", position: "insideBottomLeft", fontSize: 9, fill: "#7c3aed" }} />}
+                  <Line yAxisId="left" type="monotone" dataKey="value" stroke="#1a1a1a" strokeWidth={1.5} dot={{ r: 3, fill: "#1a1a1a", strokeWidth: 0 }} activeDot={{ r: 5 }} connectNulls={false} name="value" />
+                  {hasSecond && <Line yAxisId="right" type="monotone" dataKey="value2" stroke="#059669" strokeWidth={1.5} dot={{ r: 3, fill: "#059669", strokeWidth: 0 }} activeDot={{ r: 5 }} connectNulls={false} name="value2" strokeDasharray="4 2" />}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          );
+        })()}
+      </div>}
+
     </div>
   );
 }
