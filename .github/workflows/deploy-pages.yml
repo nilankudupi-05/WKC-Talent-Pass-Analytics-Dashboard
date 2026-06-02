@@ -1,0 +1,68 @@
+name: Deploy dashboard to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Allow the workflow to publish to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent deploy; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dashboard
+        env:
+          PORT: "4173"
+          # Pages serves the project under the repo-name subpath.
+          BASE_PATH: "/WKC-Talent-Pass-Analytics-Dashboard/"
+          # Cloudflare Worker AI proxy origin. Set as a repo variable:
+          # Settings > Secrets and variables > Actions > Variables > VITE_API_BASE
+          # e.g. https://wkc-ai-proxy.<your-subdomain>.workers.dev
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: pnpm --filter @workspace/wkc-analytics run build
+
+      - name: Add SPA 404 fallback
+        run: cp artifacts/wkc-analytics/dist/public/index.html artifacts/wkc-analytics/dist/public/404.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: artifacts/wkc-analytics/dist/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
