@@ -1,0 +1,16 @@
+# Netlify build config for the WKC Talent Pass dashboard.
+[build]
+  command = "pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/wkc-analytics run build"
+  publish = "artifacts/wkc-analytics/dist/public"
+
+[build.environment]
+  PORT = "4173"
+  BASE_PATH = "/"
+  # Cloudflare Worker AI proxy origin (public; not a secret).
+  VITE_API_BASE = "https://wkc-ai-proxy.nilank-wkc.workers.dev"
+
+# SPA fallback: serve index.html for any path that isn't a built asset.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
