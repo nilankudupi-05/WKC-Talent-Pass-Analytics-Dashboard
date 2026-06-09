@@ -149,8 +149,10 @@ const inRange = (d: string, dr: { from: string; to: string }) => {
 const stepToStatus: Record<string, string> = {
   "payment_successful": "Payment Successful",
   "payment_initiated": "Payment Intiated",
+  "payment_button_clicked": "Payment Intiated",
   "payment_dismissed": "Payment Dismissed",
   "payment_abandoned": "Payment Abandoned",
+  "payment_failed": "Payment Failed",
 };
 
 interface TelRow { quizStarted: number; quizCompleted: number; payInitiated: number; payDismissed: number; paySuccessful: number; }
@@ -258,7 +260,7 @@ interface SessionRow {
   q3_answer: string; q4_answer: string; recommendation: string; "Status for Analytics": string;
   payment_plan: string; button_clicked: string; "Time Spent Less Than 2 Seconds": string;
   "Time Spent Greater Than 2 Seconds": string;
-  page_recommendation_time_seconds: string; [key: string]: string;
+  [key: string]: string;
 }
 
 function buildSessions(rawRows: Record<string, string>[], mapping: MappingState, internalNums: string[]): SessionRow[] {
@@ -290,10 +292,18 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     events.forEach(e => {
       if (e.p.category !== m.telemetryCategory) return;
       if (gp(e.p, m.timeSpentTypePath) !== m.timeSpentTypeValue) return;
-      const secId = gp(e.p, m.timeSpentSectionPath) as string;
+      const d = (e.p.data || {}) as Record<string, unknown>;
       const secs = (gp(e.p, m.timeSpentSecondsPath) as number) || 0;
-      if (!secId) return;
-      const col = secMap[secId] || ("section_" + secId + "_time_seconds");
+      // TIME_SPENT events come in three shapes: SECTION (sectionId), SLIDE (slideName/slideId),
+      // and PAGE (pageName). Capture all three so no engagement time is silently dropped.
+      const secId = gp(e.p, m.timeSpentSectionPath) as string;
+      const slide = (d.slideName || d.slideId) as string | undefined;
+      const page = d.pageName as string | undefined;
+      let col: string;
+      if (secId) col = secMap[secId] || ("section_" + secId + "_time_seconds");
+      else if (slide) col = "slide_" + slide + "_time_seconds";
+      else if (page) col = "page_" + page + "_time_seconds";
+      else return;
       timeSec[col] = (timeSec[col] || 0) + secs;
     });
     const latestEvt = sortedEvents[sortedEvents.length - 1];
@@ -302,7 +312,12 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || (gp(latestPay?.p, m.paymentCategoryPath) as string) || "";
     // Single completion definition (reused by computeTel via sessionCompleted): a 4th answer OR a recommendation.
     const quizDone = answers[4] != null || !!recommendation;
-    const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? (recommendation ? "Quiz Completed" : "No Recommendation") : "");
+    // Every session gets a real status. Order: payment > completed > partial-quiz > landing-only.
+    const status = payStep
+      ? (stepToStatus[payStep] || payStep)
+      : quizDone
+        ? (recommendation ? "Quiz Completed" : "No Recommendation")
+        : (Object.keys(answers).length > 0 ? "Quiz Started" : "Visited");
     const mobile = (gp(uEvt?.p, m.userMobilePath) as string) || "";
     if (internalNums.includes(mobile.trim())) return null;
     const nameRaw = (gp(uEvt?.p, m.userNamePath) as string) || "";
@@ -325,7 +340,6 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       button_clicked: (gp(events[events.length - 1]?.p, "data.buttonId") as string) || "",
       "Time Spent Less Than 2 Seconds": lessThan2,
       "Time Spent Greater Than 2 Seconds": moreThan2,
-      page_recommendation_time_seconds: (timeSec["page_recommendation_time_seconds"] || 0).toString(),
       ...timeSec,
     } as SessionRow;
   }).filter((r): r is SessionRow => r !== null)
@@ -430,7 +444,7 @@ const BTN = (v: string = "default"): React.CSSProperties => ({ background: v ===
 const INP: React.CSSProperties = { border: "1px solid #e8e3dc", borderRadius: 5, padding: "5px 9px", fontSize: 11, background: "#fff", color: "#1a1a1a", fontFamily: "inherit", outline: "none" };
 const DPILL: React.CSSProperties = { background: "#f59e0b18", color: "#b45309", fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 3, display: "inline-block", marginTop: 2, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const STATUS_COLORS: Record<string, { c: string; b: string }> = { s: { c: "#059669", b: "#f0fdf4" }, i: { c: "#0369a1", b: "#f0f9ff" }, d: { c: "#dc2626", b: "#fef2f2" }, q: { c: "#6b6560", b: "#f5f2ee" }, n: { c: "#92400e", b: "#fffbeb" } };
-const scOf = (s: string) => s === "Payment Successful" ? STATUS_COLORS.s : s === "Payment Intiated" ? STATUS_COLORS.i : (s || "").includes("Dismiss") || (s || "").includes("Abandon") ? STATUS_COLORS.d : s === "No Recommendation" ? STATUS_COLORS.n : STATUS_COLORS.q;
+const scOf = (s: string) => s === "Payment Successful" ? STATUS_COLORS.s : s === "Payment Intiated" ? STATUS_COLORS.i : (s || "").includes("Dismiss") || (s || "").includes("Abandon") || (s || "").includes("Fail") ? STATUS_COLORS.d : s === "No Recommendation" ? STATUS_COLORS.n : STATUS_COLORS.q;
 const Q4L: Record<string, string> = { "chance_to_be_among_indias_best": "India's best", "local_to_national_leaderboard": "Leaderboard", "medals_and_certificates": "Medals", "personalized_feedback_report": "Feedback", "school_recognition": "School rec.", "showcase_your_childs_talent": "Showcase" };
 
 function Spin() { return <span style={{ display: "inline-block", width: 12, height: 12, border: "1.5px solid #e5e0d8", borderTopColor: "#1a1a1a", borderRadius: "50%", animation: "spin .7s linear infinite" }} />; }
@@ -459,6 +473,7 @@ const SESSION_BASE_COLS: SessionCol[] = [
 // Friendly labels for known time-spent keys; any others are humanized on the fly.
 // Ordering below also drives column order (known keys first, in this order).
 const TIME_COL_LABELS: Record<string, string> = {
+  page_recommendation_final_time_seconds: "Rec Pg",
   page_recommendation_time_seconds: "Rec Pg",
   "section_tp-section-hero_time_seconds": "Hero",
   "section_tp-section-carousel_time_seconds": "Carousel",
@@ -471,6 +486,10 @@ const TIME_COL_LABELS: Record<string, string> = {
   "section_tp-section-subscription-plan_time_seconds": "Sub Plan",
   "section_tp-section-faq_time_seconds": "FAQ",
   page_membership_time_seconds: "Membership",
+  // SLIDE-level engagement (carousels within sections)
+  slide_review_section_time_seconds: "Review Slides",
+  slide_result_carousel_section_time_seconds: "Carousel Slides",
+  slide_category_based_judge_section_time_seconds: "Judge Slides",
 };
 const TIME_COL_ORDER = Object.keys(TIME_COL_LABELS);
 
@@ -479,6 +498,7 @@ function humanizeTimeCol(key: string): string {
   const s = key
     .replace(/_time_seconds$/, "")
     .replace(/^section_/, "")
+    .replace(/^slide_/, "")
     .replace(/^page_/, "")
     .replace(/^tp-section-/, "")
     .replace(/[-_]+/g, " ")
@@ -822,14 +842,14 @@ export default function App() {
     if (!inRange(r._date, dateRange)) return false;
     if (qFilter.date !== "all" && r.Datevalue !== qFilter.date) return false;
     if (qFilter.rec !== "all" && r.recommendation !== qFilter.rec) return false;
-    if (qFilter.status !== "all" && (r["Status for Analytics"] || "Quiz Completed") !== qFilter.status) return false;
+    if (qFilter.status !== "all" && (r["Status for Analytics"] || "—") !== qFilter.status) return false;
     if (qSearch) { const q = qSearch.toLowerCase(); if (!r.name?.toLowerCase().includes(q) && !r.mobile?.includes(q) && !r.recommendation?.toLowerCase().includes(q)) return false; }
     return true;
   });
 
   const uniqueQDates = [...new Set(quizRows.map(r => r.Datevalue).filter(Boolean))].sort();
   const ALL_RECS = ["Build It!", "Color Wizards", "Dance Wizards", "Handwriting Champs", "Instrumental Genius", "Master Orator", "Recite It! - English", "Singing Stars", "Tell Ur Tale"];
-  const ALL_STATS = ["Quiz Completed", "No Recommendation", "Payment Intiated", "Payment Successful", "Payment Dismissed", "Payment Abandoned"];
+  const ALL_STATS = ["Visited", "Quiz Started", "Quiz Completed", "No Recommendation", "Payment Intiated", "Payment Successful", "Payment Dismissed", "Payment Abandoned", "Payment Failed"];
   const TYPE_META: Record<string, { label: string; color: string; bg: string; dot: string }> = {
     action: { label: "Action", color: "#1a1a1a", bg: "#f5f2ee", dot: "#1a1a1a" },
     watch: { label: "Watch", color: "#0369a1", bg: "#f0f9ff", dot: "#0369a1" },
@@ -842,6 +862,7 @@ export default function App() {
   const kpiNumVals = (key: string) => kpiRows.map(r => +(r.meta as Record<string,string>)[key] || 0).filter(v => v > 0);
   const kpiTelVals = (key: keyof TelRow) => kpiRows.map(r => r.tel?.[key] ?? 0).filter(v => v > 0);
   const avg = (vals: number[]) => vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  const sum = (vals: number[]) => vals.reduce((a, b) => a + b, 0);
   const fmtN = (v: number | null, dec = 0) => v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: dec });
 
   // Rolling 7-day avg for CPC/CTR cell colour coding
@@ -1011,17 +1032,20 @@ export default function App() {
           }
           const imp = kpiNumVals("impressions"), rea = kpiNumVals("reach"), lc = kpiNumVals("linkClicks"), lpv = kpiNumVals("lpv");
           const qs = kpiTelVals("quizStarted"), qc = kpiTelVals("quizCompleted"), pi = kpiTelVals("payInitiated"), pd = kpiTelVals("payDismissed"), po = kpiTelVals("paySuccessful");
+          // Count chips show the period TOTAL as primary, with daily avg + median as secondary.
+          const tot = (vals: number[]) => fmtN(sum(vals));
+          const am = (vals: number[]) => "Avg " + fmtN(avg(vals)) + " · Med " + fmtN(median(vals));
           const chips = [
             { label: "Total Spend", primary: "₹" + fmtN(kpiSpend), secondary: "incl. GST: ₹" + fmtN(kpiSpend * (1 + GST)) },
-            { label: "Impressions", primary: fmtN(avg(imp)), secondary: "Median: " + fmtN(median(imp)) },
-            { label: "Reach", primary: fmtN(avg(rea)), secondary: "Median: " + fmtN(median(rea)) },
-            { label: "Link Clicks", primary: fmtN(avg(lc)), secondary: "Median: " + fmtN(median(lc)) },
-            { label: "LPV", primary: fmtN(avg(lpv)), secondary: "Median: " + fmtN(median(lpv)) },
-            { label: "Quiz Started", primary: fmtN(avg(qs)), secondary: "Median: " + fmtN(median(qs)) },
-            { label: "Quiz Completed", primary: fmtN(avg(qc)), secondary: "Median: " + fmtN(median(qc)) },
-            { label: "Pay Init", primary: fmtN(avg(pi)), secondary: "Median: " + fmtN(median(pi)) },
-            { label: "Pay Dismissed", primary: fmtN(avg(pd)), secondary: "Median: " + fmtN(median(pd)) },
-            { label: "Pay OK", primary: fmtN(avg(po)), secondary: "Median: " + fmtN(median(po)) },
+            { label: "Impressions", primary: tot(imp), secondary: am(imp) },
+            { label: "Reach", primary: tot(rea), secondary: am(rea) },
+            { label: "Link Clicks", primary: tot(lc), secondary: am(lc) },
+            { label: "LPV", primary: tot(lpv), secondary: am(lpv) },
+            { label: "Quiz Started", primary: tot(qs), secondary: am(qs) },
+            { label: "Quiz Completed", primary: tot(qc), secondary: am(qc) },
+            { label: "Pay Init", primary: tot(pi), secondary: am(pi) },
+            { label: "Pay Dismissed", primary: tot(pd), secondary: am(pd) },
+            { label: "Pay OK", primary: tot(po), secondary: am(po) },
           ];
           return (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
@@ -1188,7 +1212,7 @@ export default function App() {
                         const val = row[c.key] || "";
                         const cellStyle: React.CSSProperties = { ...TD("left"), maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" };
                         if (c.key === "Status for Analytics") {
-                          return <td key={c.key} style={{ ...TD("left") }}><span style={{ background: sc.b, color: sc.c, borderRadius: 3, padding: "2px 5px", fontSize: 10, fontWeight: 500, whiteSpace: "nowrap" }}>{val || "Quiz Completed"}</span></td>;
+                          return <td key={c.key} style={{ ...TD("left") }}><span style={{ background: sc.b, color: sc.c, borderRadius: 3, padding: "2px 5px", fontSize: 10, fontWeight: 500, whiteSpace: "nowrap" }}>{val || "—"}</span></td>;
                         }
                         if (c.key === "q4_answer") {
                           const parts = String(val || "").split(",").map((v: string) => v.trim()).filter(Boolean);
