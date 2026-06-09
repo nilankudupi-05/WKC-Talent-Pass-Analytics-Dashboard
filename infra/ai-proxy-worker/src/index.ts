@@ -14,8 +14,10 @@
 
 interface Env {
   ANTHROPIC_API_KEY: string;
-  // Optional: lock CORS to your Pages origin, e.g.
-  // "https://nilankudupi-05.github.io". Defaults to "*" if unset.
+  // Optional CORS allowlist. Comma-separated list of allowed origins, e.g.
+  // "https://talentpassanalytics.netlify.app,https://nilankudupi-05.github.io".
+  // The Worker echoes back whichever listed origin made the request. Defaults
+  // to "*" (any origin) when unset.
   ALLOWED_ORIGIN?: string;
 }
 
@@ -31,47 +33,66 @@ interface CompleteBody {
   maxTokens?: number;
 }
 
-function corsHeaders(env: Env): Record<string, string> {
+// Resolve the Access-Control-Allow-Origin value for this request.
+// ALLOWED_ORIGIN is a comma-separated allowlist; if the request's Origin is in
+// it, echo that origin back (so multiple front-ends — Netlify + GitHub Pages —
+// can each be granted). If ALLOWED_ORIGIN is unset, allow any origin ("*").
+function resolveAllowOrigin(request: Request, env: Env): string {
+  const allowed = (env.ALLOWED_ORIGIN || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (allowed.length === 0) return "*";
+  const origin = request.headers.get("Origin") || "";
+  if (origin && allowed.includes(origin)) return origin;
+  return allowed[0];
+}
+
+function corsHeaders(allowOrigin: string): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
+    // Responses vary by request Origin, so caches must key on it.
+    "Vary": "Origin",
   };
 }
 
-function json(body: unknown, status: number, env: Env): Response {
+function json(body: unknown, status: number, allowOrigin: string): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+    headers: { "Content-Type": "application/json", ...corsHeaders(allowOrigin) },
   });
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const allowOrigin = resolveAllowOrigin(request, env);
+
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
+      return new Response(null, { status: 204, headers: corsHeaders(allowOrigin) });
     }
 
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== "/api/ai/complete") {
-      return json({ error: "Not found" }, 404, env);
+      return json({ error: "Not found" }, 404, allowOrigin);
     }
 
     if (!env.ANTHROPIC_API_KEY) {
-      return json({ error: "ANTHROPIC_API_KEY is not configured" }, 500, env);
+      return json({ error: "ANTHROPIC_API_KEY is not configured" }, 500, allowOrigin);
     }
 
     let body: CompleteBody;
     try {
       body = (await request.json()) as CompleteBody;
     } catch {
-      return json({ error: "Invalid JSON body" }, 400, env);
+      return json({ error: "Invalid JSON body" }, 400, allowOrigin);
     }
 
     const { system, messages, maxTokens } = body;
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return json({ error: "messages array is required" }, 400, env);
+      return json({ error: "messages array is required" }, 400, allowOrigin);
     }
 
     try {
@@ -92,7 +113,7 @@ export default {
 
       if (!upstream.ok) {
         const errText = await upstream.text();
-        return json({ error: `Anthropic API error: ${errText}` }, 502, env);
+        return json({ error: `Anthropic API error: ${errText}` }, 502, allowOrigin);
       }
 
       const data = (await upstream.json()) as {
@@ -100,10 +121,10 @@ export default {
       };
       const block = data.content?.[0];
       const text = block && block.type === "text" ? block.text ?? "" : "";
-      return json({ text }, 200, env);
+      return json({ text }, 200, allowOrigin);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      return json({ error: message }, 500, env);
+      return json({ error: message }, 500, allowOrigin);
     }
   },
 };

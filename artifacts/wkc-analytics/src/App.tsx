@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 
 const GST = 0.18;
@@ -155,22 +155,22 @@ const stepToStatus: Record<string, string> = {
 
 interface TelRow { quizStarted: number; quizCompleted: number; payInitiated: number; payDismissed: number; paySuccessful: number; }
 
-function computeTel(rawRows: Record<string, string>[], sessions: SessionRow[], date: string): TelRow | null {
-  const day = rawRows.filter(r => (r.created_on || "").startsWith(date));
-  const daySessions = sessions.filter(s => s._date === date);
-  if (!day.length && !daySessions.length) return null;
-  const parsed = day.map(r => { try { return { sid: r.session_id, p: JSON.parse(r.response || "{}") }; } catch { return { sid: r.session_id, p: {} }; } });
-  const sid = (fn: (x: { sid: string; p: Record<string, unknown> }) => boolean) => new Set(parsed.filter(fn).map(x => x.sid)).size;
-  const statusCount = (st: string | string[]) => {
-    const arr = Array.isArray(st) ? st : [st];
-    return daySessions.filter(s => arr.includes(s["Status for Analytics"])).length;
-  };
+// Derive funnel counts from the SAME session set the Quiz Sessions table renders
+// (already internal-numbers-excluded and signal-filtered by buildSessions), so the
+// funnel/KPIs always reconcile with the table instead of double-counting raw events.
+const sessionStarted = (s: SessionRow) => !!(s.q1_answer || s.q2_answer || s.q3_answer || s.q4_answer);
+const sessionCompleted = (s: SessionRow) => !!s.recommendation || !!s.q4_answer;
+
+function computeTel(sessions: SessionRow[], date: string): TelRow | null {
+  const day = sessions.filter(s => s._date === date);
+  if (!day.length) return null;
+  const statusCount = (arr: string[]) => day.filter(s => arr.includes(s["Status for Analytics"])).length;
   return {
-    quizStarted: sid(({ p }) => p.category === "QUIZ"),
-    quizCompleted: sid(({ p }) => p.category === "QUIZ" && (p as { data?: { quiz?: { step?: number } } }).data?.quiz?.step === 4),
-    payInitiated: statusCount("Payment Intiated"),
+    quizStarted: day.filter(sessionStarted).length,
+    quizCompleted: day.filter(sessionCompleted).length,
+    payInitiated: statusCount(["Payment Intiated"]),
     payDismissed: statusCount(["Payment Dismissed", "Payment Abandoned"]),
-    paySuccessful: statusCount("Payment Successful"),
+    paySuccessful: statusCount(["Payment Successful"]),
   };
 }
 
@@ -226,6 +226,28 @@ async function fetchAIMapping(rawRows: Record<string, string>[]): Promise<Mappin
   (["quizCategory", "recCategory", "paymentCategory", "telemetryCategory"] as const).forEach(k => {
     if (!catSet.has(merged[k] as string)) merged[k] = DEFAULT_MAPPING[k];
   });
+  // Validate AI-proposed paths actually resolve on sampled events of their category; if a path
+  // yields nothing but the default does, keep the default. Stops a bad AI map from silently
+  // zeroing derived fields (quiz steps, time-spent, etc.).
+  const byCat = sampleByCategory(rawRows) as Record<string, Record<string, unknown>[]>;
+  const resolvesIn = (cat: string, path: string) => {
+    const arr = byCat[cat] || [];
+    return arr.length > 0 && !!path && arr.some(p => gp(p, path) != null);
+  };
+  const pathChecks: [keyof MappingState, () => string][] = [
+    ["quizStepPath", () => merged.quizCategory as string],
+    ["quizAnswerPath", () => merged.quizCategory as string],
+    ["recNamePath", () => merged.recCategory as string],
+    ["paymentStepPath", () => merged.paymentCategory as string],
+    ["timeSpentSectionPath", () => merged.telemetryCategory as string],
+    ["timeSpentSecondsPath", () => merged.telemetryCategory as string],
+  ];
+  pathChecks.forEach(([k, catFn]) => {
+    const cat = catFn();
+    if (!resolvesIn(cat, merged[k] as string) && resolvesIn(cat, DEFAULT_MAPPING[k] as string)) {
+      merged[k] = DEFAULT_MAPPING[k];
+    }
+  });
   if (aiRaw.changes) merged.changes = aiRaw.changes;
   return merged as unknown as MappingState;
 }
@@ -277,15 +299,22 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     const latestEvt = sortedEvents[sortedEvents.length - 1];
     const date = latestEvt?.r.created_on?.slice(0, 10) || "";
     const dateObj = date ? new Date(date) : null;
-    const quizDone = answers[4] != null;
     const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || (gp(latestPay?.p, m.paymentCategoryPath) as string) || "";
+    // Single completion definition (reused by computeTel via sessionCompleted): a 4th answer OR a recommendation.
+    const quizDone = answers[4] != null || !!recommendation;
     const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? (recommendation ? "Quiz Completed" : "No Recommendation") : "");
     const mobile = (gp(uEvt?.p, m.userMobilePath) as string) || "";
     if (internalNums.includes(mobile.trim())) return null;
+    const nameRaw = (gp(uEvt?.p, m.userNamePath) as string) || "";
+    // Keep any session with a real signal — quiz answer, recommendation, payment, or telemetry —
+    // even when anonymous (name blank). Previously these were dropped, hiding real sessions and
+    // breaking funnel/table reconciliation.
+    const hasSignal = Object.keys(answers).length > 0 || !!recommendation || !!payStep || Object.keys(timeSec).length > 0;
+    if (!hasSignal) return null;
     const lessThan2 = Object.entries(timeSec).filter(([, v]) => v <= 2).map(([k]) => k.replace(/_time_seconds$/, "")).join(", ");
     const moreThan2 = Object.entries(timeSec).filter(([, v]) => v > 2).map(([k]) => k.replace(/_time_seconds$/, "")).join(", ");
     return {
-      session_id: sid, name: (gp(uEvt?.p, m.userNamePath) as string) || "", mobile,
+      session_id: sid, name: nameRaw || "(anonymous)", mobile,
       age_group: (gp(uEvt?.p, m.userAgeGroupPath) as string) || "",
       utm_source: utm.utm_source || "", utm_campaign: utm.utm_campaign || "",
       Datevalue: dateObj ? dateObj.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "",
@@ -299,7 +328,7 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       page_recommendation_time_seconds: (timeSec["page_recommendation_time_seconds"] || 0).toString(),
       ...timeSec,
     } as SessionRow;
-  }).filter((r): r is SessionRow => r !== null && !!(r.name || r.recommendation))
+  }).filter((r): r is SessionRow => r !== null)
     .sort((a, b) => a._date.localeCompare(b._date));
 }
 
@@ -406,7 +435,10 @@ const Q4L: Record<string, string> = { "chance_to_be_among_indias_best": "India's
 
 function Spin() { return <span style={{ display: "inline-block", width: 12, height: 12, border: "1.5px solid #e5e0d8", borderTopColor: "#1a1a1a", borderRadius: "50%", animation: "spin .7s linear infinite" }} />; }
 
-const SESSION_COLS = [
+interface SessionCol { key: string; label: string; tip: string }
+
+// Non-time columns — always shown, in this order.
+const SESSION_BASE_COLS: SessionCol[] = [
   { key: "_date", label: "Date", tip: "Session date" },
   { key: "name", label: "Name", tip: "Parent name + mobile" },
   { key: "recommendation", label: "Category", tip: "Recommended talent category" },
@@ -422,19 +454,51 @@ const SESSION_COLS = [
   { key: "button_clicked", label: "Last CTA", tip: "Last button clicked before leaving" },
   { key: "Time Spent Less Than 2 Seconds", label: "<2s", tip: "Sections with ≤2s time spent (low engagement)" },
   { key: "Time Spent Greater Than 2 Seconds", label: ">2s", tip: "Sections with >2s time spent (real engagement)" },
-  { key: "page_recommendation_time_seconds", label: "Rec Pg", tip: "Time on recommendation results page" },
-  { key: "section_tp-section-hero_time_seconds", label: "Hero", tip: "Time on hero/banner section" },
-  { key: "section_tp-section-carousel_time_seconds", label: "Carousel", tip: "Time on result highlights carousel" },
-  { key: "section_tp-section-video-player_time_seconds", label: "Video", tip: "Time watching video proof" },
-  { key: "section_tp-section-why-enroll_time_seconds", label: "Why Enroll", tip: "Time on why-enroll section" },
-  { key: "section_tp-section-deliverables_time_seconds", label: "Deliverables", tip: "Time on deliverables section" },
-  { key: "section_tp-section-review_time_seconds", label: "Reviews", tip: "Time on testimonials/reviews" },
-  { key: "section_tp-section-judges_time_seconds", label: "Judges", tip: "Time on expert judges section" },
-  { key: "section_plans-section_time_seconds", label: "Plans", tip: "Time on plans overview" },
-  { key: "section_tp-section-subscription-plan_time_seconds", label: "Sub Plan", tip: "Time on subscription/pricing cards" },
-  { key: "section_tp-section-faq_time_seconds", label: "FAQ", tip: "Time on FAQ section" },
-  { key: "page_membership_time_seconds", label: "Membership", tip: "Time on membership/pricing page" },
 ];
+
+// Friendly labels for known time-spent keys; any others are humanized on the fly.
+// Ordering below also drives column order (known keys first, in this order).
+const TIME_COL_LABELS: Record<string, string> = {
+  page_recommendation_time_seconds: "Rec Pg",
+  "section_tp-section-hero_time_seconds": "Hero",
+  "section_tp-section-carousel_time_seconds": "Carousel",
+  "section_tp-section-video-player_time_seconds": "Video",
+  "section_tp-section-why-enroll_time_seconds": "Why Enroll",
+  "section_tp-section-deliverables_time_seconds": "Deliverables",
+  "section_tp-section-review_time_seconds": "Reviews",
+  "section_tp-section-judges_time_seconds": "Judges",
+  "section_plans-section_time_seconds": "Plans",
+  "section_tp-section-subscription-plan_time_seconds": "Sub Plan",
+  "section_tp-section-faq_time_seconds": "FAQ",
+  page_membership_time_seconds: "Membership",
+};
+const TIME_COL_ORDER = Object.keys(TIME_COL_LABELS);
+
+function humanizeTimeCol(key: string): string {
+  if (TIME_COL_LABELS[key]) return TIME_COL_LABELS[key];
+  const s = key
+    .replace(/_time_seconds$/, "")
+    .replace(/^section_/, "")
+    .replace(/^page_/, "")
+    .replace(/^tp-section-/, "")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  return s.replace(/\b\w/g, c => c.toUpperCase()) || key;
+}
+
+// Build the time-spent columns actually present in the data (union of *_time_seconds
+// keys across sessions), so columns track the real section IDs instead of a frozen list.
+function buildTimeCols(rows: SessionRow[]): SessionCol[] {
+  const keys = new Set<string>();
+  rows.forEach(r => Object.keys(r).forEach(k => { if (k.endsWith("_time_seconds")) keys.add(k); }));
+  return [...keys].sort((a, b) => {
+    const ia = TIME_COL_ORDER.indexOf(a), ib = TIME_COL_ORDER.indexOf(b);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.localeCompare(b);
+  }).map(k => ({ key: k, label: humanizeTimeCol(k), tip: "Time spent (s) — " + humanizeTimeCol(k) }));
+}
 
 const PCT_COLS = [
   { key: "qLink", label: "Quiz/Link", hi: true, tip: "Quiz Started as % of Link Clicks" },
@@ -478,6 +542,7 @@ export default function App() {
   const [mappingState, setMappingState] = useState<MappingCacheItem | null>(() => { try { const c = localStorage.getItem("wkc_schema"); if (!c) return null; const parsed = JSON.parse(c) as MappingCacheItem; if (parsed.mapping?.timeSpentTypeValue === "time_spent" || parsed.mapping?.timeSpentSecondsPath === "data.seconds" || !parsed.mapping?.paymentCategory || !parsed.mapping?.paymentStepPath || !parsed.mapping?.quizCategory || !parsed.mapping?.quizStepPath) { localStorage.removeItem("wkc_schema"); return null; } return parsed; } catch { return null; } });
   const [mappingLoading, setMappingLoading] = useState(false);
   const [mappingNote, setMappingNote] = useState("");
+  const [skipAI, setSkipAI] = useState(() => { try { return localStorage.getItem("wkc_skipai") === "1"; } catch { return false; } });
   const [recs, setRecs] = useState<{ type: string; title: string; detail: string }[] | null>(null);
   const [recLoad, setRecLoad] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -500,6 +565,11 @@ export default function App() {
   const [cmVisibleCols, setCmVisibleCols] = useState<Set<string>>(new Set(["rec", "payInit", "payAbn", "payOK"]));
   const qaRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const fbFileRef = useRef<HTMLInputElement>(null);
+  const [fbLoading, setFbLoading] = useState(false);
+
+  // Quiz Sessions columns = static base + time-spent columns present in the data.
+  const sessionCols = useMemo<SessionCol[]>(() => [...SESSION_BASE_COLS, ...buildTimeCols(quizRows)], [quizRows]);
 
   // Extend rows when CSV introduces dates outside the current window (or when today rolls over).
   useEffect(() => {
@@ -527,7 +597,10 @@ export default function App() {
     const raw = parseCSV(text, r => !!(r.id || r.session_id));
     const fp = schemaFP(raw);
     let mapping: MappingState;
-    if (mappingState && mappingState.fp === fp) {
+    if (skipAI) {
+      mapping = DEFAULT_MAPPING;
+      setMappingNote("Using default field mapping (AI skipped).");
+    } else if (mappingState && mappingState.fp === fp) {
       mapping = mappingState.mapping;
       setMappingNote("Schema unchanged — using cached mapping.");
     } else {
@@ -560,11 +633,84 @@ export default function App() {
         tel: null,
       }));
       const merged = [...prev, ...additions].sort((a, b) => a.date.localeCompare(b.date));
-      const updated = merged.map(r => { const t = computeTel(raw, sessions, r.date); return t ? { ...r, tel: t } : r; });
+      const updated = merged.map(r => { const t = computeTel(sessions, r.date); return t ? { ...r, tel: t } : r; });
       genRecs(updated, deps, sessions);
       return updated;
     });
     setCsvLoading(false); e.target.value = "";
+  };
+
+  // Import a Facebook Ads report CSV into the per-date Meta store (localStorage["wkc_meta"]).
+  // Columns map: Day->date, Amount spent->adSpend, Impressions, Reach, Link clicks->linkClicks,
+  // Landing page views->lpv. Add-only: never overwrites a date that already has stored/seed meta.
+  const handleFbCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setFbLoading(true); setMappingNote("");
+    try {
+      const text = await file.text();
+      const raw = parseCSV(text);
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const col = (row: Record<string, string>, needles: string[]) => {
+        const keys = Object.keys(row);
+        for (const n of needles) { const k = keys.find(kk => norm(kk).includes(n)); if (k) return row[k]; }
+        return "";
+      };
+      const num = (v: string) => { const n = parseFloat(String(v).replace(/[, ]/g, "")); return isNaN(n) ? 0 : n; };
+      const byDay: Record<string, { adSpend: number; impressions: number; reach: number; linkClicks: number; lpv: number }> = {};
+      raw.forEach(r => {
+        const day = col(r, ["day"]).trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+        if (!byDay[day]) byDay[day] = { adSpend: 0, impressions: 0, reach: 0, linkClicks: 0, lpv: 0 };
+        byDay[day].adSpend += num(col(r, ["amountspent", "spend"]));
+        byDay[day].impressions += num(col(r, ["impressions"]));
+        byDay[day].reach += num(col(r, ["reach"]));
+        byDay[day].linkClicks += num(col(r, ["linkclicks"]));
+        byDay[day].lpv += num(col(r, ["landingpageviews"]));
+      });
+      const days = Object.keys(byDay).sort();
+      if (!days.length) {
+        setMappingNote("FB import failed — no rows with a valid 'Day' (YYYY-MM-DD) column were found.");
+        setFbLoading(false); e.target.value = ""; return;
+      }
+      let saved: Record<string, Record<string, string>> = {};
+      try { saved = JSON.parse(localStorage.getItem("wkc_meta") || "{}") || {}; } catch {}
+      const hasMeta = (date: string) => {
+        const existing = saved[date] || SEED_META[date];
+        return !!existing && Object.values(existing).some(v => v != null && String(v).trim() !== "");
+      };
+      const added: string[] = [], skipped: string[] = [];
+      days.forEach(date => {
+        if (hasMeta(date)) { skipped.push(date); return; }
+        const v = byDay[date];
+        saved[date] = {
+          adSpend: v.adSpend.toFixed(2),
+          impressions: String(Math.round(v.impressions)),
+          reach: String(Math.round(v.reach)),
+          linkClicks: String(Math.round(v.linkClicks)),
+          lpv: String(Math.round(v.lpv)),
+        };
+        added.push(date);
+      });
+      try { localStorage.setItem("wkc_meta", JSON.stringify(saved)); } catch {}
+      const savedNow = saved;
+      setRows(prev => {
+        const needed = buildDateList([...prev.map(r => r.date), ...days]);
+        const have = new Set(prev.map(r => r.date));
+        const additions: RowItem[] = needed.filter(d => !have.has(d)).map(date => ({
+          date,
+          meta: { ...(SEED_META[date] || { adSpend: "", impressions: "", reach: "", linkClicks: "", lpv: "" }), ...(savedNow[date] || {}) },
+          tel: null,
+        }));
+        return [...prev, ...additions]
+          .map(r => added.includes(r.date) ? { ...r, meta: { ...r.meta, ...(savedNow[r.date] || {}) } } : r)
+          .sort((a, b) => a.date.localeCompare(b.date));
+      });
+      const range = added.length ? ` (${added[0]} → ${added[added.length - 1]})` : "";
+      setMappingNote(`FB import: added ${added.length} new date${added.length === 1 ? "" : "s"}${range}; skipped ${skipped.length} already present (add-only).`);
+    } catch (err: unknown) {
+      setMappingNote("FB import failed — " + (err instanceof Error ? err.message : String(err)));
+    }
+    setFbLoading(false); e.target.value = "";
   };
 
   const genRecs = async (currentRows: RowItem[], currentDeps: DepItem[], sessions?: SessionRow[]) => {
@@ -785,10 +931,19 @@ export default function App() {
             <input type="date" value={dateRange.to} onChange={e => setDateRange(r => ({ ...r, to: e.target.value }))} style={{ border: "none", background: "transparent", fontSize: 11, color: "#1a1a1a", outline: "none", fontFamily: "inherit", cursor: "pointer" }} />
             {(dateRange.from || dateRange.to) && <span onClick={() => setDateRange({ from: "", to: "" })} style={{ fontSize: 12, color: "#9b9590", cursor: "pointer" }}>✕</span>}
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#6b6560", cursor: "pointer" }} title="Skip the AI field-mapping step and always use the built-in default mapping. Recommended when your CSV schema is stable.">
+            <input type="checkbox" checked={skipAI} onChange={e => { const v = e.target.checked; setSkipAI(v); try { localStorage.setItem("wkc_skipai", v ? "1" : "0"); } catch {} }} />
+            Defaults only
+          </label>
           <label style={{ ...BTN(), cursor: (csvLoading || mappingLoading) ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
             {(csvLoading || mappingLoading) ? <Spin /> : <span>↑</span>}
             {mappingLoading ? "Mapping..." : (csvLoading ? "Processing..." : "Upload CSV")}
             <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }} onChange={handleCSV} disabled={csvLoading || mappingLoading} />
+          </label>
+          <label style={{ ...BTN(), cursor: fbLoading ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }} title="Import a Facebook Ads report CSV into the Meta columns. Add-only: existing dates are never overwritten.">
+            {fbLoading ? <Spin /> : <span>⊕</span>}
+            {fbLoading ? "Importing..." : "Import FB CSV"}
+            <input ref={fbFileRef} type="file" accept=".csv" style={{ display: "none" }} onChange={handleFbCSV} disabled={fbLoading} />
           </label>
         </div>
       </div>
@@ -973,7 +1128,7 @@ export default function App() {
           <span style={{ fontSize: 10, color: "#9b9590", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Sort</span>
           <select value={qSort.key || ""} onChange={e => setQSort({ key: e.target.value || null, dir: 1 })} style={{ ...INP, cursor: "pointer" }}>
             <option value="">— none —</option>
-            {SESSION_COLS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+            {sessionCols.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
           {qSort.key && <button style={BTN()} onClick={() => setQSort(s => ({ ...s, dir: s.dir * -1 }))}>{qSort.dir === 1 ? "↑ Asc" : "↓ Desc"}</button>}
           {(qFilter.date !== "all" || qFilter.rec !== "all" || qFilter.status !== "all" || qSearch || qSort.key !== "_date" || qSort.dir !== -1) && <button style={BTN()} onClick={() => { setQFilter({ date: "all", rec: "all", status: "all" }); setQSearch(""); setQSort({ key: "_date", dir: -1 }); }}>Clear all</button>}
@@ -1020,7 +1175,7 @@ export default function App() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
                 <tr>
-                  {SESSION_COLS.map(c => <th key={c.key} title={c.tip} onClick={() => setQSort(s => ({ key: c.key, dir: s.key === c.key ? -s.dir : 1 }))} style={{ ...TH("left"), whiteSpace: "nowrap" }}>{c.label}{qSort.key === c.key ? (qSort.dir === 1 ? " ↑" : " ↓") : ""}</th>)}
+                  {sessionCols.map(c => <th key={c.key} title={c.tip} onClick={() => setQSort(s => ({ key: c.key, dir: s.key === c.key ? -s.dir : 1 }))} style={{ ...TH("left"), whiteSpace: "nowrap" }}>{c.label}{qSort.key === c.key ? (qSort.dir === 1 ? " ↑" : " ↓") : ""}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -1029,9 +1184,9 @@ export default function App() {
                   const isExp = expanded === row.session_id;
                   return (
                     <tr key={row.session_id + i} className="rh" onClick={() => setExpanded(isExp ? null : row.session_id)} style={{ cursor: "pointer" }}>
-                      {SESSION_COLS.map(c => {
-                        let val = row[c.key] || "";
-                        let cellStyle: React.CSSProperties = { ...TD("left"), maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" };
+                      {sessionCols.map(c => {
+                        const val = row[c.key] || "";
+                        const cellStyle: React.CSSProperties = { ...TD("left"), maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" };
                         if (c.key === "Status for Analytics") {
                           return <td key={c.key} style={{ ...TD("left") }}><span style={{ background: sc.b, color: sc.c, borderRadius: 3, padding: "2px 5px", fontSize: 10, fontWeight: 500, whiteSpace: "nowrap" }}>{val || "Quiz Completed"}</span></td>;
                         }
@@ -1045,7 +1200,7 @@ export default function App() {
                         if (c.key === "_date") {
                           return <td key={c.key} style={{ ...TD("left"), fontFamily: "monospace", fontSize: 10 }}>{val}</td>;
                         }
-                        if (["page_recommendation_time_seconds", "section_tp-section-hero_time_seconds", "section_tp-section-carousel_time_seconds", "section_tp-section-video-player_time_seconds", "section_tp-section-why-enroll_time_seconds", "section_tp-section-deliverables_time_seconds", "section_tp-section-review_time_seconds", "section_tp-section-judges_time_seconds", "section_plans-section_time_seconds", "section_tp-section-subscription-plan_time_seconds", "section_tp-section-faq_time_seconds", "page_membership_time_seconds"].includes(c.key)) {
+                        if (c.key.endsWith("_time_seconds")) {
                           const secs = parseFloat(val) || 0;
                           return <td key={c.key} style={{ ...TD("right"), fontFamily: "monospace", color: secs > 10 ? "#059669" : secs > 2 ? "#1a1a1a" : "#ccc" }}>{secs > 0 ? secs + "s" : "—"}</td>;
                         }
