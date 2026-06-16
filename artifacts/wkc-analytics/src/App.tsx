@@ -586,7 +586,10 @@ export default function App() {
   const [mappingState, setMappingState] = useState<MappingCacheItem | null>(() => { try { const c = localStorage.getItem("wkc_schema"); if (!c) return null; const parsed = JSON.parse(c) as MappingCacheItem; if (parsed.mapping?.timeSpentTypeValue === "time_spent" || parsed.mapping?.timeSpentSecondsPath === "data.seconds" || !parsed.mapping?.paymentCategory || !parsed.mapping?.paymentStepPath || !parsed.mapping?.quizCategory || !parsed.mapping?.quizStepPath) { localStorage.removeItem("wkc_schema"); return null; } return parsed; } catch { return null; } });
   const [mappingLoading, setMappingLoading] = useState(false);
   const [mappingNote, setMappingNote] = useState("");
-  const [skipAI, setSkipAI] = useState(() => { try { return localStorage.getItem("wkc_skipai") === "1"; } catch { return false; } });
+  // Default to the built-in mapping (AI opt-in). The schema is stable and the default mapping is
+  // verified-correct, so this guarantees payments/quiz process and avoids reusing a stale cached AI
+  // mapping (which mis-mapped payments in production). Users who explicitly chose a setting keep it.
+  const [skipAI, setSkipAI] = useState(() => { try { const v = localStorage.getItem("wkc_skipai"); return v === null ? true : v === "1"; } catch { return true; } });
   const [recs, setRecs] = useState<{ type: string; title: string; detail: string }[] | null>(null);
   const [recLoad, setRecLoad] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
