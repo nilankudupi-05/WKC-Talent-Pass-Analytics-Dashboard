@@ -149,16 +149,21 @@ const inRange = (d: string, dr: { from: string; to: string }) => {
 const stepToStatus: Record<string, string> = {
   "payment_successful": "Payment Successful",
   "payment_initiated": "Payment Intiated",
+  "payment_button_clicked": "Payment Intiated",
   "payment_dismissed": "Payment Dismissed",
   "payment_abandoned": "Payment Abandoned",
+  "payment_failed": "Payment Failed",
 };
 
-interface TelRow { quizStarted: number; quizCompleted: number; payInitiated: number; payDismissed: number; paySuccessful: number; }
+interface TelRow { quizStarted: number; trueQuizStarted: number; quizCompleted: number; payInitiated: number; payDismissed: number; paySuccessful: number; }
 
 // Derive funnel counts from the SAME session set the Quiz Sessions table renders
 // (already internal-numbers-excluded and signal-filtered by buildSessions), so the
 // funnel/KPIs always reconcile with the table instead of double-counting raw events.
-const sessionStarted = (s: SessionRow) => !!(s.q1_answer || s.q2_answer || s.q3_answer || s.q4_answer);
+// quizStarted = began the quiz at all (any QUIZ/DRAFT event, _started flag);
+// trueQuizStarted = gave at least one real answer (_answered flag).
+const sessionStarted = (s: SessionRow) => s._started === "1";
+const sessionAnswered = (s: SessionRow) => s._answered === "1";
 const sessionCompleted = (s: SessionRow) => !!s.recommendation || !!s.q4_answer;
 
 function computeTel(sessions: SessionRow[], date: string): TelRow | null {
@@ -167,6 +172,7 @@ function computeTel(sessions: SessionRow[], date: string): TelRow | null {
   const statusCount = (arr: string[]) => day.filter(s => arr.includes(s["Status for Analytics"])).length;
   return {
     quizStarted: day.filter(sessionStarted).length,
+    trueQuizStarted: day.filter(sessionAnswered).length,
     quizCompleted: day.filter(sessionCompleted).length,
     payInitiated: statusCount(["Payment Intiated"]),
     payDismissed: statusCount(["Payment Dismissed", "Payment Abandoned"]),
@@ -258,7 +264,7 @@ interface SessionRow {
   q3_answer: string; q4_answer: string; recommendation: string; "Status for Analytics": string;
   payment_plan: string; button_clicked: string; "Time Spent Less Than 2 Seconds": string;
   "Time Spent Greater Than 2 Seconds": string;
-  page_recommendation_time_seconds: string; [key: string]: string;
+  [key: string]: string;
 }
 
 function buildSessions(rawRows: Record<string, string>[], mapping: MappingState, internalNums: string[]): SessionRow[] {
@@ -290,26 +296,52 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
     events.forEach(e => {
       if (e.p.category !== m.telemetryCategory) return;
       if (gp(e.p, m.timeSpentTypePath) !== m.timeSpentTypeValue) return;
-      const secId = gp(e.p, m.timeSpentSectionPath) as string;
+      const d = (e.p.data || {}) as Record<string, unknown>;
       const secs = (gp(e.p, m.timeSpentSecondsPath) as number) || 0;
-      if (!secId) return;
-      const col = secMap[secId] || ("section_" + secId + "_time_seconds");
+      // TIME_SPENT events come in three shapes: SECTION (sectionId), SLIDE (slideName/slideId),
+      // and PAGE (pageName). Capture all three so no engagement time is silently dropped.
+      const secId = gp(e.p, m.timeSpentSectionPath) as string;
+      const slide = (d.slideName || d.slideId) as string | undefined;
+      const page = d.pageName as string | undefined;
+      let col: string;
+      if (secId) col = secMap[secId] || ("section_" + secId + "_time_seconds");
+      else if (slide) col = "slide_" + slide + "_time_seconds";
+      else if (page) col = "page_" + page + "_time_seconds";
+      else return;
       timeSec[col] = (timeSec[col] || 0) + secs;
     });
+    // Started signals: began the quiz at all (any QUIZ/DRAFT event, incl. step-0 age selector)
+    // vs gave at least one real answer (steps 1-4).
+    const startedSignal = events.some(e => e.p.category === m.quizCategory || e.p.category === "TALENT_PASS_QUIZ_DRAFT");
+    // "Answered" = gave at least one NON-EMPTY answer in steps 1-4. (Step 0 = age selector fires a QUIZ
+    // event with an empty answer, so Object.keys(answers) alone would wrongly equal the started count.)
+    const answeredSignal = !!(answers[1]?.answer || answers[2]?.answer || answers[3]?.answer || answers[4]?.answer);
+    // Other backend telemetry subtypes → session columns.
+    const telType = (e: { p: Record<string, unknown> }) => e.p.category === m.telemetryCategory ? gp(e.p, "data.type") : undefined;
+    const lastBtn = sortedEvents.filter(e => telType(e) === "BUTTON_CLICK").pop();
+    const lastCTA = (gp(lastBtn?.p, "data.buttonName") as string) || "";
+    const faqList = [...new Set(sortedEvents.filter(e => telType(e) === "FAQ_QUESTION_OPEN")
+      .map(e => (gp(e.p, "data.questionText") as string) || (gp(e.p, "data.questionId") as string) || "").filter(Boolean))];
+    const formFill = events.some(e => telType(e) === "PAYMENT_INITIATE_FORM_FILL");
     const latestEvt = sortedEvents[sortedEvents.length - 1];
     const date = latestEvt?.r.created_on?.slice(0, 10) || "";
     const dateObj = date ? new Date(date) : null;
     const recommendation = (gp(recEvt?.p, m.recNamePath) as string) || (gp(latestPay?.p, m.paymentCategoryPath) as string) || "";
     // Single completion definition (reused by computeTel via sessionCompleted): a 4th answer OR a recommendation.
     const quizDone = answers[4] != null || !!recommendation;
-    const status = payStep ? (stepToStatus[payStep] || payStep) : (quizDone ? (recommendation ? "Quiz Completed" : "No Recommendation") : "");
+    // Every session gets a real status. Order: payment > completed > partial-quiz > landing-only.
+    const status = payStep
+      ? (stepToStatus[payStep] || payStep)
+      : quizDone
+        ? (recommendation ? "Quiz Completed" : "No Recommendation")
+        : (startedSignal ? "Quiz Started" : "Visited");
     const mobile = (gp(uEvt?.p, m.userMobilePath) as string) || "";
     if (internalNums.includes(mobile.trim())) return null;
     const nameRaw = (gp(uEvt?.p, m.userNamePath) as string) || "";
-    // Keep any session with a real signal — quiz answer, recommendation, payment, or telemetry —
+    // Keep any session with a real signal — quiz start/answer, recommendation, payment, or telemetry —
     // even when anonymous (name blank). Previously these were dropped, hiding real sessions and
     // breaking funnel/table reconciliation.
-    const hasSignal = Object.keys(answers).length > 0 || !!recommendation || !!payStep || Object.keys(timeSec).length > 0;
+    const hasSignal = startedSignal || answeredSignal || !!recommendation || !!payStep || Object.keys(timeSec).length > 0;
     if (!hasSignal) return null;
     const lessThan2 = Object.entries(timeSec).filter(([, v]) => v <= 2).map(([k]) => k.replace(/_time_seconds$/, "")).join(", ");
     const moreThan2 = Object.entries(timeSec).filter(([, v]) => v > 2).map(([k]) => k.replace(/_time_seconds$/, "")).join(", ");
@@ -322,10 +354,13 @@ function buildSessions(rawRows: Record<string, string>[], mapping: MappingState,
       q3_answer: answers[3]?.answer || "", q4_answer: answers[4]?.answer || "",
       recommendation,
       "Status for Analytics": status, payment_plan: payPlan,
-      button_clicked: (gp(events[events.length - 1]?.p, "data.buttonId") as string) || "",
+      button_clicked: lastCTA,
+      faqs_opened: faqList.join(", "),
+      form_fill: formFill ? "Yes" : "",
+      _started: startedSignal ? "1" : "",
+      _answered: answeredSignal ? "1" : "",
       "Time Spent Less Than 2 Seconds": lessThan2,
       "Time Spent Greater Than 2 Seconds": moreThan2,
-      page_recommendation_time_seconds: (timeSec["page_recommendation_time_seconds"] || 0).toString(),
       ...timeSec,
     } as SessionRow;
   }).filter((r): r is SessionRow => r !== null)
@@ -430,8 +465,9 @@ const BTN = (v: string = "default"): React.CSSProperties => ({ background: v ===
 const INP: React.CSSProperties = { border: "1px solid #e8e3dc", borderRadius: 5, padding: "5px 9px", fontSize: 11, background: "#fff", color: "#1a1a1a", fontFamily: "inherit", outline: "none" };
 const DPILL: React.CSSProperties = { background: "#f59e0b18", color: "#b45309", fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 3, display: "inline-block", marginTop: 2, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const STATUS_COLORS: Record<string, { c: string; b: string }> = { s: { c: "#059669", b: "#f0fdf4" }, i: { c: "#0369a1", b: "#f0f9ff" }, d: { c: "#dc2626", b: "#fef2f2" }, q: { c: "#6b6560", b: "#f5f2ee" }, n: { c: "#92400e", b: "#fffbeb" } };
-const scOf = (s: string) => s === "Payment Successful" ? STATUS_COLORS.s : s === "Payment Intiated" ? STATUS_COLORS.i : (s || "").includes("Dismiss") || (s || "").includes("Abandon") ? STATUS_COLORS.d : s === "No Recommendation" ? STATUS_COLORS.n : STATUS_COLORS.q;
+const scOf = (s: string) => s === "Payment Successful" ? STATUS_COLORS.s : s === "Payment Intiated" ? STATUS_COLORS.i : (s || "").includes("Dismiss") || (s || "").includes("Abandon") || (s || "").includes("Fail") ? STATUS_COLORS.d : s === "No Recommendation" ? STATUS_COLORS.n : STATUS_COLORS.q;
 const Q4L: Record<string, string> = { "chance_to_be_among_indias_best": "India's best", "local_to_national_leaderboard": "Leaderboard", "medals_and_certificates": "Medals", "personalized_feedback_report": "Feedback", "school_recognition": "School rec.", "showcase_your_childs_talent": "Showcase" };
+const ageLabel = (a: string) => a === "age6_15" ? "CKC 6-15" : a === "lcl" ? "LCL 3-5" : (a || "—");
 
 function Spin() { return <span style={{ display: "inline-block", width: 12, height: 12, border: "1.5px solid #e5e0d8", borderTopColor: "#1a1a1a", borderRadius: "50%", animation: "spin .7s linear infinite" }} />; }
 
@@ -451,7 +487,9 @@ const SESSION_BASE_COLS: SessionCol[] = [
   { key: "q4_answer", label: "Q4 Values", tip: "What matters most — multi-select" },
   { key: "Status for Analytics", label: "Status", tip: "Final session status" },
   { key: "payment_plan", label: "Plan", tip: "Subscription plan selected" },
-  { key: "button_clicked", label: "Last CTA", tip: "Last button clicked before leaving" },
+  { key: "button_clicked", label: "Last CTA", tip: "Last button clicked before leaving (BUTTON_CLICK buttonName)" },
+  { key: "faqs_opened", label: "FAQs Opened", tip: "FAQ questions the user opened (FAQ_QUESTION_OPEN)" },
+  { key: "form_fill", label: "Form Fill", tip: "Started the contact/payment form (PAYMENT_INITIATE_FORM_FILL)" },
   { key: "Time Spent Less Than 2 Seconds", label: "<2s", tip: "Sections with ≤2s time spent (low engagement)" },
   { key: "Time Spent Greater Than 2 Seconds", label: ">2s", tip: "Sections with >2s time spent (real engagement)" },
 ];
@@ -459,6 +497,7 @@ const SESSION_BASE_COLS: SessionCol[] = [
 // Friendly labels for known time-spent keys; any others are humanized on the fly.
 // Ordering below also drives column order (known keys first, in this order).
 const TIME_COL_LABELS: Record<string, string> = {
+  page_recommendation_final_time_seconds: "Rec Pg",
   page_recommendation_time_seconds: "Rec Pg",
   "section_tp-section-hero_time_seconds": "Hero",
   "section_tp-section-carousel_time_seconds": "Carousel",
@@ -471,6 +510,10 @@ const TIME_COL_LABELS: Record<string, string> = {
   "section_tp-section-subscription-plan_time_seconds": "Sub Plan",
   "section_tp-section-faq_time_seconds": "FAQ",
   page_membership_time_seconds: "Membership",
+  // SLIDE-level engagement (carousels within sections)
+  slide_review_section_time_seconds: "Review Slides",
+  slide_result_carousel_section_time_seconds: "Carousel Slides",
+  slide_category_based_judge_section_time_seconds: "Judge Slides",
 };
 const TIME_COL_ORDER = Object.keys(TIME_COL_LABELS);
 
@@ -479,6 +522,7 @@ function humanizeTimeCol(key: string): string {
   const s = key
     .replace(/_time_seconds$/, "")
     .replace(/^section_/, "")
+    .replace(/^slide_/, "")
     .replace(/^page_/, "")
     .replace(/^tp-section-/, "")
     .replace(/[-_]+/g, " ")
@@ -516,7 +560,7 @@ const PCT_COLS = [
 
 const META_M = [{ key: "adSpend", label: "Spend excl GST", pre: "₹" }, { key: "impressions", label: "Impressions" }, { key: "reach", label: "Reach" }, { key: "linkClicks", label: "Link Clicks" }, { key: "lpv", label: "LPV" }];
 const META_D = [{ key: "gst", label: "Spend incl GST", pre: "₹", dec: 0 }, { key: "freq", label: "Frequency", dec: 2 }, { key: "cpc", label: "Cost/Click", pre: "₹", dec: 2 }, { key: "cpl", label: "Cost/Lead", pre: "₹", dec: 2 }, { key: "ctr", label: "CTR", suf: "%", dec: 2 }];
-const TEL_C = [{ key: "quizStarted", label: "Quiz Started" }, { key: "quizCompleted", label: "Quiz Done" }, { key: "payInitiated", label: "Pay Init" }, { key: "payDismissed", label: "Pay Dismissed" }, { key: "paySuccessful", label: "Pay OK" }];
+const TEL_C = [{ key: "quizStarted", label: "Quiz Started" }, { key: "trueQuizStarted", label: "True Quiz Started" }, { key: "quizCompleted", label: "Quiz Done" }, { key: "payInitiated", label: "Pay Init" }, { key: "payDismissed", label: "Pay Dismissed" }, { key: "paySuccessful", label: "Pay OK" }];
 
 interface DepItem { date: string; label: string; }
 interface RowItem { date: string; meta: Record<string, string>; tel: TelRow | null; }
@@ -560,6 +604,7 @@ export default function App() {
   const [showIntMgr, setShowIntMgr] = useState(false);
   const [newIntNum, setNewIntNum] = useState("");
   const [dateRange, setDateRange] = useState({ from: "", to: "" });
+  const [ageFilter, setAgeFilter] = useState<"all" | "age6_15" | "lcl">("all");
   const [graphMetric, setGraphMetric] = useState("impressions");
   const [graphMetric2, setGraphMetric2] = useState("none");
   const [cmVisibleCols, setCmVisibleCols] = useState<Set<string>>(new Set(["rec", "payInit", "payAbn", "payOK"]));
@@ -568,8 +613,13 @@ export default function App() {
   const fbFileRef = useRef<HTMLInputElement>(null);
   const [fbLoading, setFbLoading] = useState(false);
 
+  // Age-path filter (CKC age6_15 / LCL lcl). Flows through every session-derived view.
+  // Ad-spend meta is not age-specific, so only the telemetry `tel` is recomputed per age.
+  const viewSessions = useMemo(() => ageFilter === "all" ? quizRows : quizRows.filter(s => s.age_group === ageFilter), [quizRows, ageFilter]);
+  const viewRows = useMemo(() => ageFilter === "all" ? rows : rows.map(r => ({ ...r, tel: computeTel(viewSessions, r.date) })), [rows, viewSessions, ageFilter]);
+
   // Quiz Sessions columns = static base + time-spent columns present in the data.
-  const sessionCols = useMemo<SessionCol[]>(() => [...SESSION_BASE_COLS, ...buildTimeCols(quizRows)], [quizRows]);
+  const sessionCols = useMemo<SessionCol[]>(() => [...SESSION_BASE_COLS, ...buildTimeCols(viewSessions)], [viewSessions]);
 
   // Extend rows when CSV introduces dates outside the current window (or when today rolls over).
   useEffect(() => {
@@ -810,26 +860,32 @@ export default function App() {
     };
   };
 
-  const sortedQ = qSort.key ? [...quizRows].sort((a, b) => {
+  const sortedQ = qSort.key ? [...viewSessions].sort((a, b) => {
     const av = qSort.key === "_date" ? (a._date || a.Datevalue || "") : (a[qSort.key!] || "");
     const bv = qSort.key === "_date" ? (b._date || b.Datevalue || "") : (b[qSort.key!] || "");
     const an = parseFloat(av), bn = parseFloat(bv);
     if (!isNaN(an) && !isNaN(bn)) return (an - bn) * qSort.dir;
     return av.toString().localeCompare(bv.toString()) * qSort.dir;
-  }) : quizRows;
+  }) : viewSessions;
 
   const filteredQ = sortedQ.filter(r => {
     if (!inRange(r._date, dateRange)) return false;
     if (qFilter.date !== "all" && r.Datevalue !== qFilter.date) return false;
     if (qFilter.rec !== "all" && r.recommendation !== qFilter.rec) return false;
-    if (qFilter.status !== "all" && (r["Status for Analytics"] || "Quiz Completed") !== qFilter.status) return false;
+    if (qFilter.status !== "all" && (r["Status for Analytics"] || "—") !== qFilter.status) return false;
     if (qSearch) { const q = qSearch.toLowerCase(); if (!r.name?.toLowerCase().includes(q) && !r.mobile?.includes(q) && !r.recommendation?.toLowerCase().includes(q)) return false; }
     return true;
   });
 
   const uniqueQDates = [...new Set(quizRows.map(r => r.Datevalue).filter(Boolean))].sort();
-  const ALL_RECS = ["Build It!", "Color Wizards", "Dance Wizards", "Handwriting Champs", "Instrumental Genius", "Master Orator", "Recite It! - English", "Singing Stars", "Tell Ur Tale"];
-  const ALL_STATS = ["Quiz Completed", "No Recommendation", "Payment Intiated", "Payment Successful", "Payment Dismissed", "Payment Abandoned"];
+  // Known categories seed the ordering/empty-state; union with whatever appears in the data so no
+  // recommendation (CKC or LCL, current or future naming) is ever dropped from the Category Matrix.
+  const KNOWN_RECS = ["Build It!", "Color Wizards", "Dance Wizards", "Handwriting Champs", "Instrumental Genius", "Master Orator", "Recite It! - English", "Singing Stars", "Tell Ur Tale"];
+  const ALL_RECS = useMemo(() => {
+    const extra = [...new Set(quizRows.map(r => r.recommendation).filter(r => r && r !== "?"))].filter(r => !KNOWN_RECS.includes(r)).sort();
+    return [...KNOWN_RECS, ...extra];
+  }, [quizRows]);
+  const ALL_STATS = ["Visited", "Quiz Started", "Quiz Completed", "No Recommendation", "Payment Intiated", "Payment Successful", "Payment Dismissed", "Payment Abandoned", "Payment Failed"];
   const TYPE_META: Record<string, { label: string; color: string; bg: string; dot: string }> = {
     action: { label: "Action", color: "#1a1a1a", bg: "#f5f2ee", dot: "#1a1a1a" },
     watch: { label: "Watch", color: "#0369a1", bg: "#f0f9ff", dot: "#0369a1" },
@@ -837,11 +893,12 @@ export default function App() {
   };
 
   // KPI bar computations
-  const kpiRows = rows.filter(r => inRange(r.date, dateRange) && hasData(r));
+  const kpiRows = viewRows.filter(r => inRange(r.date, dateRange) && hasData(r));
   const kpiSpend = kpiRows.reduce((s, r) => s + (+r.meta.adSpend || 0), 0);
   const kpiNumVals = (key: string) => kpiRows.map(r => +(r.meta as Record<string,string>)[key] || 0).filter(v => v > 0);
   const kpiTelVals = (key: keyof TelRow) => kpiRows.map(r => r.tel?.[key] ?? 0).filter(v => v > 0);
   const avg = (vals: number[]) => vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  const sum = (vals: number[]) => vals.reduce((a, b) => a + b, 0);
   const fmtN = (v: number | null, dec = 0) => v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: dec });
 
   // Rolling 7-day avg for CPC/CTR cell colour coding
@@ -883,7 +940,7 @@ export default function App() {
     { key: "payOK", label: "Pay Succ", short: "PAY SUCC", color: "#059669", bg: "#f0fdf4" },
   ];
   const cmActiveCols = CM_STATUS_COLS.filter(c => cmVisibleCols.has(c.key));
-  const cmAllSessions = quizRows.filter(s => inRange(s._date, dateRange));
+  const cmAllSessions = viewSessions.filter(s => inRange(s._date, dateRange));
   const cmSessions = cmAllSessions.filter(s => !!s.recommendation);
   const cmNoRecSessions = cmAllSessions.filter(s => s["Status for Analytics"] === "No Recommendation");
   const cmNoFinish = cmAllSessions.length - cmSessions.length - cmNoRecSessions.length;
@@ -930,6 +987,11 @@ export default function App() {
             <span style={{ fontSize: 10, color: "#9b9590" }}>To</span>
             <input type="date" value={dateRange.to} onChange={e => setDateRange(r => ({ ...r, to: e.target.value }))} style={{ border: "none", background: "transparent", fontSize: 11, color: "#1a1a1a", outline: "none", fontFamily: "inherit", cursor: "pointer" }} />
             {(dateRange.from || dateRange.to) && <span onClick={() => setDateRange({ from: "", to: "" })} style={{ fontSize: 12, color: "#9b9590", cursor: "pointer" }}>✕</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 2, background: "#f0ede8", borderRadius: 6, padding: 2 }} title="Filter all views by age path (from user.ageGroup). CKC = ages 6-15, LCL = ages 3-5.">
+            {([["all", "All ages"], ["age6_15", "CKC 6-15"], ["lcl", "LCL 3-5"]] as ["all" | "age6_15" | "lcl", string][]).map(([v, l]) => (
+              <button key={v} onClick={() => setAgeFilter(v)} style={{ background: ageFilter === v ? "#fff" : "transparent", border: "none", borderRadius: 5, padding: "4px 8px", fontSize: 11, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", color: ageFilter === v ? "#1a1a1a" : "#9b9590", boxShadow: ageFilter === v ? "0 1px 2px #0001" : "none" }}>{l}</button>
+            ))}
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#6b6560", cursor: "pointer" }} title="Skip the AI field-mapping step and always use the built-in default mapping. Recommended when your CSV schema is stable.">
             <input type="checkbox" checked={skipAI} onChange={e => { const v = e.target.checked; setSkipAI(v); try { localStorage.setItem("wkc_skipai", v ? "1" : "0"); } catch {} }} />
@@ -1010,18 +1072,22 @@ export default function App() {
             );
           }
           const imp = kpiNumVals("impressions"), rea = kpiNumVals("reach"), lc = kpiNumVals("linkClicks"), lpv = kpiNumVals("lpv");
-          const qs = kpiTelVals("quizStarted"), qc = kpiTelVals("quizCompleted"), pi = kpiTelVals("payInitiated"), pd = kpiTelVals("payDismissed"), po = kpiTelVals("paySuccessful");
+          const qs = kpiTelVals("quizStarted"), tqs = kpiTelVals("trueQuizStarted"), qc = kpiTelVals("quizCompleted"), pi = kpiTelVals("payInitiated"), pd = kpiTelVals("payDismissed"), po = kpiTelVals("paySuccessful");
+          // Count chips show the period TOTAL as primary, with daily avg + median as secondary.
+          const tot = (vals: number[]) => fmtN(sum(vals));
+          const am = (vals: number[]) => "Avg " + fmtN(avg(vals)) + " · Med " + fmtN(median(vals));
           const chips = [
             { label: "Total Spend", primary: "₹" + fmtN(kpiSpend), secondary: "incl. GST: ₹" + fmtN(kpiSpend * (1 + GST)) },
-            { label: "Impressions", primary: fmtN(avg(imp)), secondary: "Median: " + fmtN(median(imp)) },
-            { label: "Reach", primary: fmtN(avg(rea)), secondary: "Median: " + fmtN(median(rea)) },
-            { label: "Link Clicks", primary: fmtN(avg(lc)), secondary: "Median: " + fmtN(median(lc)) },
-            { label: "LPV", primary: fmtN(avg(lpv)), secondary: "Median: " + fmtN(median(lpv)) },
-            { label: "Quiz Started", primary: fmtN(avg(qs)), secondary: "Median: " + fmtN(median(qs)) },
-            { label: "Quiz Completed", primary: fmtN(avg(qc)), secondary: "Median: " + fmtN(median(qc)) },
-            { label: "Pay Init", primary: fmtN(avg(pi)), secondary: "Median: " + fmtN(median(pi)) },
-            { label: "Pay Dismissed", primary: fmtN(avg(pd)), secondary: "Median: " + fmtN(median(pd)) },
-            { label: "Pay OK", primary: fmtN(avg(po)), secondary: "Median: " + fmtN(median(po)) },
+            { label: "Impressions", primary: tot(imp), secondary: am(imp) },
+            { label: "Reach", primary: tot(rea), secondary: am(rea) },
+            { label: "Link Clicks", primary: tot(lc), secondary: am(lc) },
+            { label: "LPV", primary: tot(lpv), secondary: am(lpv) },
+            { label: "Quiz Started", primary: tot(qs), secondary: am(qs) },
+            { label: "True Quiz Started", primary: tot(tqs), secondary: am(tqs) },
+            { label: "Quiz Completed", primary: tot(qc), secondary: am(qc) },
+            { label: "Pay Init", primary: tot(pi), secondary: am(pi) },
+            { label: "Pay Dismissed", primary: tot(pd), secondary: am(pd) },
+            { label: "Pay OK", primary: tot(po), secondary: am(po) },
           ];
           return (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
@@ -1046,7 +1112,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {rows.filter(row => inRange(row.date, dateRange)).map(row => {
+              {viewRows.filter(row => inRange(row.date, dateRange)).map(row => {
                 const dv = calcDerived(row.meta), rdeps = depForDate(row.date), noData = !hasData(row);
                 const isEd = (f: string) => editCell?.date === row.date && editCell?.field === f;
                 const dvAny = dv as Record<string, number | null>;
@@ -1188,7 +1254,7 @@ export default function App() {
                         const val = row[c.key] || "";
                         const cellStyle: React.CSSProperties = { ...TD("left"), maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" };
                         if (c.key === "Status for Analytics") {
-                          return <td key={c.key} style={{ ...TD("left") }}><span style={{ background: sc.b, color: sc.c, borderRadius: 3, padding: "2px 5px", fontSize: 10, fontWeight: 500, whiteSpace: "nowrap" }}>{val || "Quiz Completed"}</span></td>;
+                          return <td key={c.key} style={{ ...TD("left") }}><span style={{ background: sc.b, color: sc.c, borderRadius: 3, padding: "2px 5px", fontSize: 10, fontWeight: 500, whiteSpace: "nowrap" }}>{val || "—"}</span></td>;
                         }
                         if (c.key === "q4_answer") {
                           const parts = String(val || "").split(",").map((v: string) => v.trim()).filter(Boolean);
@@ -1203,6 +1269,9 @@ export default function App() {
                         if (c.key.endsWith("_time_seconds")) {
                           const secs = parseFloat(val) || 0;
                           return <td key={c.key} style={{ ...TD("right"), fontFamily: "monospace", color: secs > 10 ? "#059669" : secs > 2 ? "#1a1a1a" : "#ccc" }}>{secs > 0 ? secs + "s" : "—"}</td>;
+                        }
+                        if (c.key === "age_group") {
+                          return <td key={c.key} style={cellStyle}>{ageLabel(val)}</td>;
                         }
                         return <td key={c.key} style={cellStyle}>{val || "—"}</td>;
                       })}
@@ -1441,7 +1510,7 @@ export default function App() {
             reach: { label: "Reach", dec: 0 }, linkClicks: { label: "Link Clicks", dec: 0 }, lpv: { label: "LPV", dec: 0 },
             cpc: { label: "CPC", prefix: "₹", dec: 2 }, cpl: { label: "CPL", prefix: "₹", dec: 2 },
             ctr: { label: "CTR", suffix: "%", dec: 2 }, freq: { label: "Frequency", dec: 2 },
-            quizStarted: { label: "Quiz Started", dec: 0 }, quizCompleted: { label: "Quiz Done", dec: 0 },
+            quizStarted: { label: "Quiz Started", dec: 0 }, trueQuizStarted: { label: "True Quiz Started", dec: 0 }, quizCompleted: { label: "Quiz Done", dec: 0 },
             payInitiated: { label: "Pay Init", dec: 0 }, payDismissed: { label: "Pay Dismissed", dec: 0 }, paySuccessful: { label: "Pay OK", dec: 0 },
           };
           const getVal = (r: RowItem, m: string): number | null => {
@@ -1464,7 +1533,7 @@ export default function App() {
           };
           const meta = GRAPH_META[graphMetric] || { label: graphMetric };
           const meta2 = graphMetric2 !== "none" ? (GRAPH_META[graphMetric2] || { label: graphMetric2 }) : null;
-          const graphData = rows.filter(r => inRange(r.date, dateRange) && hasData(r)).map(r => ({
+          const graphData = viewRows.filter(r => inRange(r.date, dateRange) && hasData(r)).map(r => ({
             date: r.date.slice(5), fullDate: r.date,
             value: getVal(r, graphMetric),
             value2: graphMetric2 !== "none" ? getVal(r, graphMetric2) : null,
