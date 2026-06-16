@@ -578,7 +578,8 @@ export default function App() {
       tel: null,
     }));
   });
-  const [deps, setDeps] = useState<DepItem[]>(SEED_DEPS);
+  // Deployment notes persist in localStorage (like ad-spend). Fall back to the seed list on first use.
+  const [deps, setDeps] = useState<DepItem[]>(() => { try { const s = JSON.parse(localStorage.getItem("wkc_deps") || "null"); return Array.isArray(s) ? s : SEED_DEPS; } catch { return SEED_DEPS; } });
   const [mode, setMode] = useState("raw");
   const [editCell, setEditCell] = useState<{ date: string; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
@@ -615,6 +616,9 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   const fbFileRef = useRef<HTMLInputElement>(null);
   const [fbLoading, setFbLoading] = useState(false);
+
+  // Persist deployment notes so they survive reloads (any setDeps writes through to localStorage).
+  useEffect(() => { try { localStorage.setItem("wkc_deps", JSON.stringify(deps)); } catch {} }, [deps]);
 
   // Age-path filter (CKC age6_15 / LCL lcl). Flows through every session-derived view.
   // Ad-spend meta is not age-specific, so only the telemetry `tel` is recomputed per age.
