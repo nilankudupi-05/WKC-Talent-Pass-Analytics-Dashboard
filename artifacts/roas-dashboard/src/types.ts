@@ -18,5 +18,6 @@ export interface DashboardData {
   generatedAt: string;
   dateRange: { start: string; end: string };
   metrics: DailyMetric[];
+  categories: Category[];
   subCategories: string[];
 }

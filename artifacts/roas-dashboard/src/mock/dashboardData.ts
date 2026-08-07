@@ -11,7 +11,9 @@ const SUB_CATEGORIES: Array<{ category: Category; subCategory: string }> = [
   { category: "Uncategorized", subCategory: "Uncategorized" },
 ];
 
-const DAYS = 30;
+// 90 days gives the 30-day moving average a meaningful number of points to draw
+// (a 30-day window needs 30 days of lead-in before the line can start).
+const DAYS = 90;
 
 /** Small deterministic pseudo-random generator so the mock UI looks identical on every run. */
 function lcg(seed: number): () => number {
@@ -60,9 +62,12 @@ function buildMockMetrics(): DailyMetric[] {
 
 const metrics = buildMockMetrics();
 
+const CATEGORIES: Category[] = ["Website Sales", "Showcases", "Uncategorized"];
+
 export const mockDashboardData: DashboardData = {
   generatedAt: new Date().toISOString(),
   dateRange: { start: isoDate(DAYS - 1), end: isoDate(0) },
   metrics,
+  categories: CATEGORIES,
   subCategories: SUB_CATEGORIES.map((s) => s.subCategory),
 };
