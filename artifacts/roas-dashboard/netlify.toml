@@ -1,0 +1,18 @@
+# Netlify build config for the WKC ROAS dashboard.
+# This file only takes effect once a separate Netlify site's "Base directory"
+# is set to artifacts/roas-dashboard — it does not affect the existing
+# wkc-analytics site, which uses the root netlify.toml.
+[build]
+  base = "artifacts/roas-dashboard"
+  command = "pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/roas-dashboard run build"
+  publish = "artifacts/roas-dashboard/dist/public"
+
+[build.environment]
+  PORT = "5175"
+  BASE_PATH = "/"
+
+# SPA fallback: serve index.html for any path that isn't a built asset.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
