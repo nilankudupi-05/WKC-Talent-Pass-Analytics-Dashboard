@@ -2,10 +2,14 @@
 # This file only takes effect once a separate Netlify site's "Base directory"
 # is set to artifacts/roas-dashboard — it does not affect the existing
 # wkc-analytics site, which uses the root netlify.toml.
+#
+# Because this file lives INSIDE that base directory (not the repo root),
+# Netlify resolves publish/functions relative to it — no "artifacts/roas-dashboard/"
+# prefix here, and no `base` key (the UI's Base Directory setting already covers that;
+# repeating it here would make Netlify look for a doubled-up nested path).
 [build]
-  base = "artifacts/roas-dashboard"
   command = "pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/roas-dashboard run build"
-  publish = "artifacts/roas-dashboard/dist/public"
+  publish = "dist/public"
   functions = "netlify/functions"
 
 [build.environment]
