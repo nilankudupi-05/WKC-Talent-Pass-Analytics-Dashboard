@@ -1,0 +1,7 @@
+# Local secrets — never commit. Real values live in Netlify's environment variables.
+.env
+.env.*
+!.env.example
+
+# Local Netlify folder
+.netlify

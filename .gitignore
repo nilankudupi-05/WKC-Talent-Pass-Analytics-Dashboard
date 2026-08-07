@@ -52,3 +52,6 @@ Thumbs.db
 .claude/launch.json
 Talent Pass Analytics Dashboard/.claude/launch.json
 Talent Pass Analytics Dashboard/zipFile.zip
+
+# Local Netlify folder
+.netlify

@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "netlify/functions/**/*"],
   "exclude": ["node_modules", "build", "dist"],
   "compilerOptions": {
     "noEmit": true,

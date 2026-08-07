@@ -1,12 +1,12 @@
-// TODO(M3): replace mockDashboardData with fetch("/.netlify/functions/dashboard-data")
-import { useMemo, useState } from "react";
-import { mockDashboardData } from "@/mock/dashboardData";
+import { useEffect, useMemo, useState } from "react";
+import type { DashboardData } from "@/types";
 import { buildRoasTrend, buildSpendTrend, buildRevenueTrend } from "@/lib/trend";
 import { formatInr, formatRoas } from "@/lib/utils";
 import { FiltersBar, ALL } from "@/components/FiltersBar";
 import { Tabs } from "@/components/ui/Tabs";
 import { MetricSection } from "@/components/MetricSection";
 import { CategorySpendTable } from "@/components/CategorySpendTable";
+import { Card, CardContent } from "@/components/ui/Card";
 
 type MetricTab = "roas" | "spend" | "revenue";
 
@@ -16,11 +16,43 @@ const TABS: Array<{ value: MetricTab; label: string }> = [
   { value: "revenue", label: "Revenue" },
 ];
 
+function useDashboardData() {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/.netlify/functions/dashboard-data")
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `Request failed with status ${res.status}`);
+        }
+        return res.json() as Promise<DashboardData>;
+      })
+      .then((json) => {
+        if (!cancelled) setData(json);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load dashboard data");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { data, error };
+}
+
 export function DashboardPage() {
-  const { metrics, categories, subCategories, dateRange } = mockDashboardData;
+  const { data, error } = useDashboardData();
   const [category, setCategory] = useState<string>(ALL);
   const [subCategory, setSubCategory] = useState<string>(ALL);
   const [activeTab, setActiveTab] = useState<MetricTab>("roas");
+
+  const metrics = data?.metrics ?? [];
 
   const filteredMetrics = useMemo(
     () =>
@@ -34,18 +66,38 @@ export function DashboardPage() {
   const spendSeries = useMemo(() => buildSpendTrend(filteredMetrics), [filteredMetrics]);
   const revenueSeries = useMemo(() => buildRevenueTrend(filteredMetrics), [filteredMetrics]);
 
+  if (error) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-8">
+        <Card>
+          <CardContent className="text-sm text-red-600 dark:text-red-400">Couldn&apos;t load dashboard data: {error}</CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-8">
+        <Card>
+          <CardContent className="text-sm text-slate-500 dark:text-slate-400">Loading dashboard data&hellip;</CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8">
       <header>
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">WKC Ad Spend &amp; ROAS</h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          {dateRange.start} &ndash; {dateRange.end}
+          {data.dateRange.start} &ndash; {data.dateRange.end}
         </p>
       </header>
 
       <FiltersBar
-        categories={categories}
-        subCategories={subCategories}
+        categories={data.categories}
+        subCategories={data.subCategories}
         category={category}
         subCategory={subCategory}
         onCategoryChange={setCategory}
