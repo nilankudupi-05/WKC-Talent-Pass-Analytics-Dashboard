@@ -1,15 +1,16 @@
-# Netlify build config for the WKC ROAS dashboard.
+# Netlify build config for the WKC ROAS dashboard ("roas-dashboard" site).
 #
-# REQUIRED SITE SETTING: this site's "Base directory" must be set to
-# artifacts/roas-dashboard. Netlify only reads netlify.toml from the base
-# directory — with no base directory set it reads the repo-root netlify.toml
-# instead, which builds the Talent Pass dashboard (wkc-analytics) and declares
-# no functions at all, so this file would be ignored entirely.
+# HOW THIS FILE IS FOUND: the site has Netlify's monorepo "package directory"
+# set to artifacts/roas-dashboard (build_settings.package_path — the legacy
+# "base directory" field is empty). That is what makes Netlify read THIS file
+# rather than the repo-root netlify.toml, which builds the Talent Pass
+# dashboard (wkc-analytics).
 #
-# Because the base directory IS this directory, publish/functions below are
-# relative to it — no "artifacts/roas-dashboard/" prefix. Also leave the build
-# command and publish directory fields EMPTY in the Netlify UI; UI values
-# silently override this file.
+# THEREFORE: every path below is relative to artifacts/roas-dashboard. Do NOT
+# add an "artifacts/roas-dashboard/" prefix to publish or functions — that was
+# PR #12's mistake and it resolves to a doubled-up path that does not exist.
+# If a deploy publishes the wrong app or 404s, check the site's package
+# directory setting before editing these paths.
 [build]
   command = "pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/roas-dashboard run build"
   publish = "dist/public"
