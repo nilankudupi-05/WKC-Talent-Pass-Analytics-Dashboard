@@ -1,17 +1,36 @@
 # Netlify build config for the WKC ROAS dashboard.
-# This site does not have a "Base directory" set, so this config file's
-# publish/functions paths are resolved relative to the repo root even though
-# the file itself lives inside artifacts/roas-dashboard — hence the
-# "artifacts/roas-dashboard/" prefix below. The build command runs from the
-# repo root too, which is required for the pnpm workspace filter to resolve.
+#
+# REQUIRED SITE SETTING: this site's "Base directory" must be set to
+# artifacts/roas-dashboard. Netlify only reads netlify.toml from the base
+# directory — with no base directory set it reads the repo-root netlify.toml
+# instead, which builds the Talent Pass dashboard (wkc-analytics) and declares
+# no functions at all, so this file would be ignored entirely.
+#
+# Because the base directory IS this directory, publish/functions below are
+# relative to it — no "artifacts/roas-dashboard/" prefix. Also leave the build
+# command and publish directory fields EMPTY in the Netlify UI; UI values
+# silently override this file.
 [build]
   command = "pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/roas-dashboard run build"
-  publish = "artifacts/roas-dashboard/dist/public"
-  functions = "artifacts/roas-dashboard/netlify/functions"
+  publish = "dist/public"
+  functions = "netlify/functions"
 
 [build.environment]
+  # pnpm walks up from the base directory to find pnpm-workspace.yaml, so both
+  # the install and the --filter above resolve against the workspace root.
+  NODE_VERSION = "22"
   PORT = "5175"
   BASE_PATH = "/"
+
+# The dashboard-data function imports google-auth-library. pnpm links workspace
+# dependencies as symlinks, which the default bundler can fail to follow — that
+# shows up as a green build whose function 500s at runtime with
+# "Cannot find module 'google-auth-library'". esbuild follows them correctly.
+[functions]
+  # Repeated from [build] above: `netlify dev` does not always pick the directory up
+  # from [build].functions, and silently serves 404s when it doesn't.
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
 
 # `netlify dev` proxies the Vite dev server; without this it assumes Vite's
 # default port (5173) instead of the PORT set above.
@@ -21,6 +40,7 @@
   framework = "#custom"
 
 # SPA fallback: serve index.html for any path that isn't a built asset.
+# Function routes are matched before redirects, so /.netlify/functions/* is safe.
 [[redirects]]
   from = "/*"
   to = "/index.html"
