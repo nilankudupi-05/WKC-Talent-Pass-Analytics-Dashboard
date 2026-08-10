@@ -1,24 +1,26 @@
 # Netlify build config for the WKC ROAS dashboard ("roas-dashboard" site).
 #
 # HOW THIS FILE IS FOUND: the site has Netlify's monorepo "package directory"
-# set to artifacts/roas-dashboard (build_settings.package_path — the legacy
-# "base directory" field is empty). That is what makes Netlify read THIS file
-# rather than the repo-root netlify.toml, which builds the Talent Pass
-# dashboard (wkc-analytics).
+# set to artifacts/roas-dashboard (build_settings.package_path). That is what
+# makes Netlify read THIS file rather than the repo-root netlify.toml, which
+# builds the Talent Pass dashboard (wkc-analytics).
 #
-# THEREFORE: every path below is relative to artifacts/roas-dashboard. Do NOT
-# add an "artifacts/roas-dashboard/" prefix to publish or functions — that was
-# PR #12's mistake and it resolves to a doubled-up path that does not exist.
-# If a deploy publishes the wrong app or 404s, check the site's package
-# directory setting before editing these paths.
+# BUT the paths inside it are NOT relative to this directory. The legacy
+# "base directory" field is empty, so Netlify resolves publish/functions
+# against the REPO ROOT — hence the "artifacts/roas-dashboard/" prefix below.
+# This is not a guess; a deploy with unprefixed paths resolved them to
+#   publish: /opt/build/repo/dist/public
+# and failed with "Deploy directory 'dist/public' does not exist".
+#
+# So: keep the prefix on publish/functions, and do NOT "simplify" it away.
+# The build command itself runs from the repo root, which is also what the
+# pnpm workspace filter needs.
 [build]
   command = "pnpm install --frozen-lockfile --ignore-scripts && pnpm --filter @workspace/roas-dashboard run build"
-  publish = "dist/public"
-  functions = "netlify/functions"
+  publish = "artifacts/roas-dashboard/dist/public"
+  functions = "artifacts/roas-dashboard/netlify/functions"
 
 [build.environment]
-  # pnpm walks up from the base directory to find pnpm-workspace.yaml, so both
-  # the install and the --filter above resolve against the workspace root.
   NODE_VERSION = "22"
   PORT = "5175"
   BASE_PATH = "/"
@@ -28,13 +30,15 @@
 # shows up as a green build whose function 500s at runtime with
 # "Cannot find module 'google-auth-library'". esbuild follows them correctly.
 [functions]
-  # Repeated from [build] above: `netlify dev` does not always pick the directory up
-  # from [build].functions, and silently serves 404s when it doesn't.
-  directory = "netlify/functions"
   node_bundler = "esbuild"
 
 # `netlify dev` proxies the Vite dev server; without this it assumes Vite's
 # default port (5173) instead of the PORT set above.
+#
+# Local caveat: `netlify dev` runs from THIS directory, so the repo-root-relative
+# [build].functions path above does not resolve for it and it serves 404s on
+# /.netlify/functions/*. Run it with an explicit override:
+#   netlify dev --functions netlify/functions
 [dev]
   command = "pnpm run dev"
   targetPort = 5175
