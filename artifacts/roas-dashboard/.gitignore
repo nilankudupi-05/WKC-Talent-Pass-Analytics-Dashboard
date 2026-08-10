@@ -5,3 +5,6 @@
 
 # Local Netlify folder
 .netlify
+
+# Written by `netlify dev` when it sets up the Edge Functions environment.
+deno.lock
